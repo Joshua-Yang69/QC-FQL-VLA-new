@@ -29,17 +29,37 @@ def timeit(method):
 
 
 def initialize_pretrained_weights(model, cfg):
-    # Use torch.load to load the checkpoint instead of pl_load
-    pretrain_chk = torch.load(format_sftp_path(Path(cfg.pretrain_chk)), map_location=lambda storage, loc: storage)
-
+    """Initialize model with pretrained weights from various checkpoint formats."""
+    checkpoint_path = format_sftp_path(Path(cfg.pretrain_chk))
+    
+    # Check if it's a HuggingFace format directory
+    if checkpoint_path.is_dir():
+        # HuggingFace format directory
+        model_pt_path = checkpoint_path / "model.pt"
+        model_safetensors_path = checkpoint_path / "model.safetensors"
+        
+        if model_pt_path.exists():
+            pretrain_chk = torch.load(model_pt_path, map_location=lambda storage, loc: storage)
+            # Handle both wrapped state_dict and direct state_dict
+            state_dict = pretrain_chk.get("state_dict", pretrain_chk)
+        elif model_safetensors_path.exists():
+            from safetensors.torch import load_file
+            state_dict = load_file(model_safetensors_path)
+        else:
+            raise ValueError(f"No model.pt or model.safetensors found in {checkpoint_path}")
+    else:
+        # Original checkpoint format (.ckpt)
+        pretrain_chk = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
+        state_dict = pretrain_chk["state_dict"]
+    
     # If plan recognition weights need to be excluded
     if "pretrain_exclude_pr" in cfg and cfg.pretrain_exclude_pr:
-        for key in list(pretrain_chk["state_dict"].keys()):
+        for key in list(state_dict.keys()):
             if key.startswith("plan_recognition"):
-                del pretrain_chk["state_dict"][key]
-
+                del state_dict[key]
+    
     # Load the state dict into the model with strict=False to allow non-matching keys
-    model.load_state_dict(pretrain_chk["state_dict"], strict=False)
+    model.load_state_dict(state_dict, strict=False)
 
 
 def get_git_commit_hash(repo_path: Path) -> str:

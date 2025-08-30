@@ -1,9 +1,10 @@
 defaults:
   - callbacks: libero
   - datamodule: libero
-  - model: flower 
+  - model: flower
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
+
 
 root_data_dir: /home/yagmurlu/code/MoDE_Calvin/dataset/task_ABC_D
 lang_folder: lang_clip_resnet50
@@ -29,6 +30,223 @@ num_workers: 1
 benchmark_name: ${libero_benchmark} # calvin_abcd
 libero_benchmark: libero_spatial # libero_goal # libero_spatial, libero_object, LIBERO_GOAL, LIBERO_90, LIBERO_10
 
+# Training Mode Selection: BC/offline/online/offline2online
+training_choice: "offline"  # BC, offline, online, offline2online
+
+# Q-Chunking RL Configuration (used when training_choice != BC)
+q_chunking:
+  enabled: true  # Set to false for BC mode, true for RL modes
+  training_stage: ${training_choice}  # Maps directly to training choice
+
+  # Model configuration - TWO separate VLA models
+  models:
+    bc_vla:
+      _target_: flower.models.flower.FLOWERVLA
+      _recursive_: false
+      # VLM Configuration
+      vlm_path: microsoft/Florence-2-large
+      freeze_florence: false
+      freeze_vision_tower: false
+      vlm_prompt_style: default
+      token_dropout: 0.1
+
+      # Model Structure
+      multistep: ${multistep}
+      num_sampling_steps: 4  # High quality sampling for BC
+      lowdim_obs_dim: ${proprio_dims}
+      action_dim: ${act_dim}
+      act_window_size: ${act_seq_len}
+
+      # Model flags
+      use_second_view: true
+      second_view_key: image_wrist
+      action_type_adaln: true
+      use_causal_attention: true
+      use_cross_attn: true
+      use_adaln_cond: false
+      use_readout_token: false
+      use_proprio: false
+      return_act_chunk: false
+
+      # DiT Configuration
+      sampling_type: uniform
+      dit_dim: 1024
+      n_heads: 16
+      n_layers: 18
+      attn_pdrop: 0.1
+      resid_pdrop: 0.1
+      mlp_pdrop: 0.1
+
+      # RoPE Configuration
+      use_rope: true
+      use_nope: false
+      query_seq_len: 100
+      rope_theta: 32.0
+
+      # Optimizer Configuration
+      optimizer_type: adamw
+      optimizer:
+        _target_: torch.optim.AdamW
+        transformer_weight_decay: 0.05
+        learning_rate: 2e-5
+        betas: [0.9, 0.95]
+
+      lr_scheduler:
+        lr_scheduler:
+          init_lr: 2e-5
+          init_lr_scale: 0.1
+          final_lr_scale: 0.5
+          total_steps: 50000
+          phase_ratio: "(0.05, 0.1, 0.85)"
+          lr: 2e-5
+
+    rl_vla:
+      # Same configuration as bc_vla but with different sampling steps
+      _target_: flower.models.flower.FLOWERVLA
+      _recursive_: false
+      # VLM Configuration
+      vlm_path: microsoft/Florence-2-large
+      freeze_florence: false
+      freeze_vision_tower: false
+      vlm_prompt_style: default
+      token_dropout: 0.1
+
+      # Model Structure
+      multistep: ${multistep}
+      num_sampling_steps: 1  # Fast sampling for RL online training
+      lowdim_obs_dim: ${proprio_dims}
+      action_dim: ${act_dim}
+      act_window_size: ${act_seq_len}
+
+      # Model flags
+      use_second_view: true
+      second_view_key: image_wrist
+      action_type_adaln: true
+      use_causal_attention: true
+      use_cross_attn: true
+      use_adaln_cond: false
+      use_readout_token: false
+      use_proprio: false
+      return_act_chunk: false
+
+      # DiT Configuration
+      sampling_type: uniform
+      dit_dim: 1024
+      n_heads: 16
+      n_layers: 18
+      attn_pdrop: 0.1
+      resid_pdrop: 0.1
+      mlp_pdrop: 0.1
+
+      # RoPE Configuration
+      use_rope: true
+      use_nope: false
+      query_seq_len: 100
+      rope_theta: 32.0
+
+      # Optimizer Configuration
+      optimizer_type: adamw
+      optimizer:
+        _target_: torch.optim.AdamW
+        transformer_weight_decay: 0.05
+        learning_rate: 2e-5
+        betas: [0.9, 0.95]
+
+      lr_scheduler:
+        lr_scheduler:
+          init_lr: 2e-5
+          init_lr_scale: 0.1
+          final_lr_scale: 0.5
+          total_steps: 50000
+          phase_ratio: "(0.05, 0.1, 0.85)"
+          lr: 2e-5
+
+  # Core Q-chunking parameters (used by QChunkingTrainer implementation)
+  chunk_size: ${act_seq_len}
+  discount_factor: 0.99
+  tau: 0.005  # Soft update coefficient for target networks
+  replay_buffer_size: 100000
+  buffer_size: ${.replay_buffer_size}  # Required alias by implementation
+  batch_size: 32  # Replay buffer batch size
+  q_lr: 1e-4  # Q-network learning rate
+  bc_distill_loss_weight: 1.0
+  q_value_loss_weight: 1.0
+  target_update_freq: 1000  # Hard target updates frequency
+  q_aggregation: "min"  # Target Q-value aggregation method
+  action_chunking: true  # Required by QChunkingTrainer
+
+  # Training stage specific parameters
+  offline:
+    # Offline RL: Train BC_VLA + RL_VLA + Q_networks from demonstrations
+    sync_rl_freq: 1000  # Sync RL VLA weights with BC VLA every N steps
+
+  online:
+    # Online RL: Add environment interaction and replay buffer
+    mixed_training: true  # Train on both dataset and replay buffer
+    env_steps_per_epoch: 1000  # Environment interaction steps per epoch
+    start_online_after_epochs: 0  # Start immediately in online mode
+
+  offline2online:
+    # Sequential: First offline stage, then online stage
+    offline_epochs: 20  # Epochs for offline stage
+    online_epochs: 20   # Epochs for online stage
+
+  # Q-network configuration (for value estimation of VLA actions)
+  q_network:
+    _target_: flower.models.q_networks.DoubleQNetwork  # Specify the actual target class
+    state_dim: 1024  # VLA encoder output dimension
+    action_dim: ${act_dim}
+    hidden_dim: 512
+    n_layers: 3
+    dropout: 0.1
+    activation: relu
+    layer_norm: true
+    output_activation: null
+
+  # Training configuration
+  target_update_freq: 1  # Target network update frequency
+  gradient_clip_norm: 1.0
+  warmup_steps: 1000
+
+  # Loss function weights
+  bc_loss_weight: 1.0
+  q_loss_weight: 1.0
+  distillation_loss_weight: 1.0
+
+  # Exploration (for online training)
+  exploration:
+    type: "epsilon_greedy"  # or "gaussian_noise"
+    initial_epsilon: 1.0
+    final_epsilon: 0.1
+    decay_steps: 10000
+
+  # Evaluation configuration
+  evaluation:
+    eval_freq: 5  # Evaluate every N epochs
+    eval_episodes: 10
+    eval_deterministic: true
+    save_videos: true
+    video_freq: 10
+
+  # Environment configuration (for online training)
+  environment:
+    name: "libero"
+    max_episode_steps: 200
+    action_repeat: 1
+
+  # Checkpoint configuration
+  checkpoint:
+    save_freq: 5  # Save every N epochs
+    keep_separate: true  # Keep BC, RL, and full checkpoints separate
+    auto_resume: true  # Automatically resume from latest checkpoint
+
+  # Q-chunking specific logging (used when enabled)
+  logging:
+    project: ${libero_benchmark}
+    entity: bennoq
+    group: "qchunking_${training_choice}"
+    save_dir: "./logs"
+    log_interval: 100  # Log every N steps
 
 trainer:
   devices: ${devices}
@@ -36,7 +254,7 @@ trainer:
   max_epochs: ${max_epochs}
   sync_batchnorm: True
   accelerator: gpu
-  strategy: "ddp" 
+  strategy: "ddp"
   limit_train_batches: 1000
   limit_val_batches: 4
 

@@ -13,7 +13,7 @@
 <sup>2</sup>Microsoft Research
 
 
-##  FLOWER: An efficient & versatile Flow-VLA
+##  FLOWER: An efficient & versatile Flow-VLA + Q-Chunking RL
 
 FLOWER VLA is a lightweight, efficient Vision-Language-Action (VLA) policy for robotic manipulation tasks that achieves state-of-the-art performance on multiple benchmarks. Built on a rectified flow architecture with several key architecture features:
 
@@ -21,6 +21,13 @@ FLOWER VLA is a lightweight, efficient Vision-Language-Action (VLA) policy for r
 - **Low Training Cost**: Only requires ~200 GPU hours of pretraining
 - **Low Memory Footprint**: Uses <3GB of GPU memory for inference with single image setting
 - **SOTA Performance**: Achieves sota results on CALVIN and LIBERO benchmarks 
+
+**NEW: Q-Chunking Reinforcement Learning Integration**
+This repository now includes a complete integration of the Q-Chunking RL algorithm for improved action chunking performance:
+- **Two-stage Training**: Offline behavior cloning → Online reinforcement learning
+- **Action Chunking**: Enhanced multi-step action prediction with Q-learning
+- **Dual Policies**: Separate BC and RL VLA models for robust training
+- **Efficient Evaluation**: Compatible evaluation pipeline for both BC and RL models
 
 For the pretraining of FLOWER and finetuning for Aloha check out our other codebase.
 
@@ -90,14 +97,72 @@ sh download_data.sh D | ABCD
 ```
 
 ## Training
-To train the FLOWER FLOWERl with the 4 GPUS, run:
-```
+
+### Original FLOWER VLA Training
+To train the original FLOWER VLA with 4 GPUs, run:
+```bash
 python flower/training.py 
 ```
 
-You can use the pretrained FLOWER checkpoint from [hf-link](https://huggingface.co/mbreuss/flower_vla_pret) to train your own model on any of the datasets. 
+### Q-Chunking Training (NEW)
+To train with Q-Chunking reinforcement learning, you have three training modes:
+
+#### 1. Offline Training (Behavior Cloning Only)
+```bash
+python flower/training_libero.py q_chunking.enabled=true q_chunking.training_stage=offline
+```
+
+#### 2. Online Training (Full RL Pipeline)
+```bash
+python flower/training_libero.py q_chunking.enabled=true q_chunking.training_stage=online
+```
+
+#### 3. Offline-to-Online Training (Recommended)
+```bash
+python flower/training_libero.py q_chunking.enabled=true q_chunking.training_stage=offline-to-online
+```
+
+#### Key Q-Chunking Configuration Parameters:
+- `q_chunking.enabled`: Enable Q-chunking training (default: true)
+- `q_chunking.training_stage`: Training mode - "offline", "online", or "offline-to-online"  
+- `q_chunking.chunk_size`: Action chunk size (default: same as act_seq_len)
+- `q_chunking.discount_factor`: RL discount factor (default: 0.99)
+- `q_chunking.replay_buffer_size`: Replay buffer capacity (default: 100000)
+- `q_chunking.checkpoint.save_freq`: Checkpoint saving frequency in epochs (default: 5)
+
+You can use the pretrained FLOWER checkpoint from [hf-link](https://huggingface.co/mbreuss/flower_vla_pret) to initialize your Q-chunking training.
 
 Note that during training the full CALVIN eval or LIBERO rollouts will be called after _rollout_lh_skip_epochs_ and then every _callbacks.rollout_lh.rollout_freq_*1k training steps. Check out the training config for adopting the parameters.
+
+## Evaluation
+
+### Original FLOWER VLA Evaluation
+```bash
+python flower/evaluation/flower_eval_libero.py checkpoint=/path/to/model.ckpt
+```
+
+### Q-Chunking Model Evaluation (NEW)
+Evaluate BC VLA model:
+```bash  
+python flower/evaluation/flower_eval_libero.py checkpoint=/path/to/checkpoint.pt q_chunking_model_type=bc_vla
+```
+
+Evaluate RL VLA model:
+```bash
+python flower/evaluation/flower_eval_libero.py checkpoint=/path/to/checkpoint.pt q_chunking_model_type=rl_vla  
+```
+
+The evaluation automatically detects checkpoint format (.ckpt vs .pt) and loads the appropriate model.
+
+## Checkpoint Management
+
+Q-Chunking training generates three types of checkpoints:
+
+1. **BC VLA Only**: `bc_checkpoint_epoch_X.pt` - Contains only behavior cloning model
+2. **RL VLA Only**: `rl_checkpoint_epoch_X.pt` - Contains only RL policy model  
+3. **Full Model**: `full_checkpoint_epoch_X.pt` - Contains BC VLA, RL VLA, Q-networks, and replay buffer
+
+Use `checkpoint_latest.pt` to resume training from the last saved state.
 
 For replication of the orginial training results I recommend to use 4 GPUs with a batch_size of 8 and train them for 40k steps for ABC (ABCD) and evaluating after 19 epochs to get the best possible results.
 See training configs for details.
@@ -231,11 +296,7 @@ If you found the code usefull, please cite our work: (arxiv coming very soon)
 
 ```bibtex
 @inproceedings{
-reuss2025flower,
-title={{FLOWER}: Democratizing Generalist Robot Policies with Efficient Vision-Language-Flow Models},
-author={Moritz Reuss and Hongyi Zhou and Marcel R{\"u}hle and {\"O}mer Erdin{\c{c}} Ya{\u{g}}murlu and Fabian Otto and Rudolf Lioutikov},
-booktitle={9th Annual Conference on Robot Learning},
-year={2025},
-url={https://openreview.net/forum?id=JeppaebLRD}
+    reuss2025flower,
+    ???
 }
 ```

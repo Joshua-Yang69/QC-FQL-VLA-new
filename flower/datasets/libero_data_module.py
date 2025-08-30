@@ -13,7 +13,10 @@ from libero.libero.benchmark import get_benchmark
 from libero.lifelong.datasets import (GroupedTaskDataset, SequenceVLDataset)
 from libero.lifelong.utils import (get_task_embs, safe_device, create_experiment_dir)
 
-from flower.datasets.utils.libero_utils import get_dataset, get_split_dataset
+from datasets.utils.libero_utils import get_dataset, get_split_dataset
+
+
+
 
 class TranslatedSequenceVLDataset(Dataset):
     def __init__(
@@ -21,10 +24,11 @@ class TranslatedSequenceVLDataset(Dataset):
         sequence_dataset,
         task_emb,
         task_description,
+        transforms=None,
         obs_seq_len: int =1,
         act_seq_len: int =1,
-        transforms=None
     ):
+
         self.obs_seq_len = obs_seq_len
         self.act_seq_len = act_seq_len
         self.transforms = hydra.utils.instantiate(transforms)
@@ -58,18 +62,29 @@ class TranslatedSequenceVLDataset(Dataset):
         # Assuming data contains images in 'rgb_static' and 'rgb_gripper'
         if train:
             transforms = self.transforms['train']
+        else:
+            transforms = self.transforms['val']
+
         for key in data['rgb_obs']:
             x = data['rgb_obs'][key]
             x = torch.from_numpy(x).byte().permute(0, 3, 1, 2)
             for transform in transforms[key]:
                 x = transform(x)
             data['rgb_obs'][key] = x
-            # data['rgb_obs'][key] = transforms[key](data['rgb_obs'][key])
+
+
+        if 'next_rgb_obs' in data:
+            for key in data['next_rgb_obs']:
+                x = data['next_rgb_obs'][key]
+                x = torch.from_numpy(x).byte().permute(0, 3, 1, 2)
+                for transform in transforms[key]:
+                    x = transform(x)
+                data['next_rgb_obs'][key] = x
 
         return data
 
     def get_des_act_obs_sequence(self, return_dict):
-
+    # 保持LIBERO原有的序列处理
         for key in return_dict['obs']:
             return_dict['obs'][key] = return_dict['obs'][key][:self.obs_seq_len]
         return_dict['actions'] = return_dict['actions'][:self.act_seq_len]
@@ -77,23 +92,86 @@ class TranslatedSequenceVLDataset(Dataset):
         return_dict['robot_obs'] = return_dict['obs']['joint_states'][:self.obs_seq_len]
         return_dict['gripper_states'] = return_dict['obs']['gripper_states'][:self.obs_seq_len]
 
+        # Q-Chunking: 手动构造next_obs (st+h)
+        # 我们需要从原始序列数据中构造执行完action chunk后的状态
+        chunk_size = self.act_seq_len
+
+        original_seq_len = len(return_dict['obs']['agentview_rgb'])
+
+        if original_seq_len > chunk_size:
+            # 构造next_obs：取序列中第chunk_size帧作为st+h
+            return_dict['next_obs'] = {}
+            for key in return_dict['obs']:
+                # 从原始序列中取第chunk_size帧
+                return_dict['next_obs'][key] = return_dict['obs'][key][chunk_size:chunk_size+1]
+
+            # 构造next_robot_obs和next_gripper_states
+            return_dict['next_robot_obs'] = return_dict['obs']['joint_states'][chunk_size]
+            return_dict['next_gripper_states'] = return_dict['obs']['gripper_states'][chunk_size]
+        else:
+
+            return_dict['next_obs'] = {}
+            for key in return_dict['obs']:
+                return_dict['next_obs'][key] = return_dict['obs'][key][-1:]
+
+            return_dict['next_robot_obs'] = return_dict['obs']['joint_states'][-1]
+            return_dict['next_gripper_states'] = return_dict['obs']['gripper_states'][-1]
+
+
+        seq_len = len(return_dict['actions'])
+        return_dict['rewards'] = np.zeros(seq_len, dtype=np.float32)
+        return_dict['rewards'][-1] = 1.0
+
+
+        return_dict['dones'] = np.zeros(seq_len, dtype=np.float32)
+        return_dict['dones'][-1] = 1.0
+
         return return_dict
 
     def translation_dict(self, dict):
         translated_dict = {}
-        # dict['obs'] = self.combine_goal_obs_with_obs(dict['obs'], dict['goal_obs'])
+
         if 'obs' in dict.keys():
             translated_dict['rgb_obs'] = {}
             translated_dict["rgb_obs"]['rgb_static'] = dict['obs']['agentview_rgb']
             translated_dict["rgb_obs"]['rgb_gripper'] = dict['obs']['eye_in_hand_rgb']
-            translated_dict['robot_obs'] = dict['obs']['joint_states']
-            # translated_dict['gripper_states'] = dict['obs']['gripper_states']
+            translated_dict['robot_obs'] = np.concatenate([
+                dict['robot_obs'],
+                dict['gripper_states']
+            ], axis=-1)
 
+
+        # 处理next_obs
+        if 'next_obs' in dict.keys():
+            translated_dict['next_rgb_obs'] = {}
+            translated_dict["next_rgb_obs"]['rgb_static'] = dict['next_obs']['agentview_rgb']
+            translated_dict["next_rgb_obs"]['rgb_gripper'] = dict['next_obs']['eye_in_hand_rgb']
+
+            if 'next_robot_obs' in dict and 'next_gripper_states' in dict:
+                translated_dict['next_robot_obs'] = np.concatenate([
+                    dict['next_robot_obs'],
+                    dict['next_gripper_states']
+                ], axis=-1)
+        else:
+            # Fallback: 使用序列的最后一帧，而不是当前帧
+            translated_dict['next_rgb_obs'] = {}
+            translated_dict["next_rgb_obs"]['rgb_static'] = dict['obs']['agentview_rgb'][-1:]  # 最后一帧
+            translated_dict["next_rgb_obs"]['rgb_gripper'] = dict['obs']['eye_in_hand_rgb'][-1:]  # 最后一帧
+
+            last_robot_obs = dict['robot_obs'][-1]  # 最后一帧
+            last_gripper_state = dict['gripper_states'][-1]  # 最后一帧
+            if np.isscalar(last_gripper_state):
+                last_gripper_state = np.array([last_gripper_state])
+            translated_dict['next_robot_obs'] = np.concatenate([last_robot_obs, last_gripper_state], axis=-1)
+
+        # 其他字段
         translated_dict['lang_text'] = dict['lang_text']
         translated_dict['depth_obs'] = {}
         translated_dict['actions'] = dict['actions']
-        # translated_dict['robot_obs'] = dict['robot_obs']
-        translated_dict['robot_obs'] = np.concatenate([dict['robot_obs'], np.expand_dims(dict['obs']['gripper_states'][0], 0)], axis=-1)
+        if 'rewards' in dict:
+            translated_dict['rewards']=dict['rewards']
+        if 'dones' in dict:
+            translated_dict['dones']=dict['dones']
         return translated_dict
 
     def combine_goal_obs_with_obs(self, obs, goal_obs):
@@ -113,7 +191,7 @@ class LiberoDataModule(pl.LightningDataModule):
         datasets: DictConfig,
         observation_space:  DictConfig,
         num_workers: int = 8,
-        transforms: DictConfig = None,  # Replace with your default transforms
+        transforms: DictConfig = None,
         shuffle_val: bool = False,
         benchmark_name: str = 'libero_goal',
         task_embedding_format: str = 'clip',
@@ -145,7 +223,6 @@ class LiberoDataModule(pl.LightningDataModule):
     def translate_obs_space(self, obs_space):
         self.libero_observation_space = {}
         self.libero_observation_space['rgb'] = obs_space['rgb_obs']
-
         # self.libero_observation_space['modality']['depth'] = []
         self.libero_observation_space['low_dim'] = obs_space['state_obs']
 
@@ -172,12 +249,14 @@ class LiberoDataModule(pl.LightningDataModule):
             #     seq_len=datasets_cfg.lang_dataset.action_seq_len,
             #     split_ratio=self.split_ratio
             # )
+
             task_i_dataset, shape_meta = get_dataset(
                 dataset_path=dataset_path,
                 obs_modality=self.libero_observation_space,
                 initialize_obs_utils=(i == 0),
                 seq_len=datasets_cfg.lang_dataset.action_seq_len,
             )
+
             descriptions.append(benchmark_instance.get_task(i).language)
 
             task_embs = get_task_embs(self.cfg, descriptions)
@@ -189,6 +268,8 @@ class LiberoDataModule(pl.LightningDataModule):
             #     obs_seq_len=datasets_cfg.lang_dataset.obs_seq_len,
             #     transforms=self.transforms
             # )
+
+
             vl_dataset = TranslatedSequenceVLDataset(
                 # task_i_dataset[1],
                 task_i_dataset,
