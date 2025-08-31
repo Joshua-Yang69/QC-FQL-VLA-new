@@ -5,10 +5,12 @@ ema:
   save_ema_weights_in_callback_state: True
   evaluate_ema_weights_instead: True
 
+
   power: 0.6666666666666666
   inv_gamma: 1.0
   min_value: 0.0
   max_value: 0.9999
+
 
 rollout_lh:
   _target_: flower.rollout.libero_rollout.RolloutLibero
@@ -17,8 +19,8 @@ rollout_lh:
     _target_: flower.wrappers.hulc_wrapper.HulcWrapper
   skip_epochs: ${rollout_lh_skip_epochs}
   benchmark_name: ${libero_benchmark}
-  rollout_freq: 10
-  num_videos: 0
+  rollout_freq: 1
+  num_videos: 5
   num_sequences: 50
   max_steps: 520
   empty_cache: false

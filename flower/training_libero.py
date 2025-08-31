@@ -27,6 +27,9 @@ import flower.models.flower as models_m
 from flower.models.q_networks import DoubleQNetwork
 from flower.models.replay_buffer import SequenceReplayBuffer
 from flower.utils.utils import get_git_commit_hash, get_last_checkpoint, initialize_pretrained_weights, print_system_env_info
+from pytorch_lightning.callbacks import Callback
+from flower.rollout.libero_rollout import RolloutLibero
+
 
 # Add local repo to path
 sys.path.insert(0, str(Path(__file__).absolute().parents[1]))
@@ -37,10 +40,10 @@ logging.basicConfig(
 )
 
 
-
 logger = logging.getLogger(__name__)
 
 class QChunkingTrainer:
+
     """
     Q-Chunking trainer that implements the Q-chunking reinforcement learning algorithm.
 
@@ -94,6 +97,9 @@ class QChunkingTrainer:
 
         logger.info(f"Initialized Q-Chunking trainer with stage: {self.training_stage}")
 
+
+
+
     def setup_models(self, base_model_cfg: DictConfig):
         """Initialize all models for Q-chunking."""
         logger.info("Setting up Q-chunking models...")
@@ -135,7 +141,11 @@ class QChunkingTrainer:
             chunk_size=self.q_cfg.chunk_size,
             device=self.device
         )
+
+
         logger.info("Initialized replay buffer")
+
+
 
 
     def setup_optimizers(self):
@@ -210,7 +220,6 @@ class QChunkingTrainer:
         rewards = dataset_batch['rewards'].to(self.device)
         dones = dataset_batch['dones'].to(self.device)
 
-
         # Flatten action chunks for Q-networks (following original algorithm)
         if self.q_cfg.action_chunking:
             # Reshape to (batch_size, chunk_size * action_dim)
@@ -237,7 +246,13 @@ class QChunkingTrainer:
 
         with torch.no_grad():
             self.rl_vla.modality_scope = modality_scope if 'modality_scope' in locals() else 'lang'
-            next_obs_features = self.rl_vla.encode_observations(next_obs_batch)
+            if isinstance(next_obs_batch, dict) and all(isinstance(v, dict) and 'actions' in v for v in next_obs_batch.values()):
+                    _,next_obs_dataset_batch=next(iter(next_obs_batch.items()))
+                    next_obs_features = self.rl_vla.encode_observations(next_obs_dataset_batch)
+            else:
+                next_obs_dataset_batch = next_obs_batch
+                next_obs_features = self.rl_vla.encode_observations(next_obs_dataset_batch)
+
 
             # Sample next actions using original VLA interface
             noise = torch.randn_like(actions, device=self.device)
@@ -251,11 +266,17 @@ class QChunkingTrainer:
 
         # 2. Encode states for Q-networks (extract features from VLA)
         with torch.no_grad():
-            current_obs_features = self.rl_vla.encode_observations(batch if isinstance(batch,dict) and all(isinstance(v,dict) and 'actions' in v for v in batch.values()) else dataset_batch)
+            if isinstance(batch,dict) and all(isinstance(v,dict) and 'actions' in v for v in batch.values()):
+                _,dataset_batch=next(iter(batch.items()))
+                current_obs_features = self.rl_vla.encode_observations(dataset_batch)
+            else:
+                dataset_batch = batch
+                current_obs_features = self.rl_vla.encode_observations(dataset_batch)
+
             # Pool features to get state representation
             current_states = current_obs_features['features'].mean(dim=1)
 
-            next_obs_features = self.rl_vla.encode_observations(next_obs_batch)
+            next_obs_features = self.rl_vla.encode_observations(next_obs_dataset_batch)
             next_states = next_obs_features['features'].mean(dim=1)
 
         # 3. Compute current Q-values (original line 50)
@@ -263,6 +284,7 @@ class QChunkingTrainer:
 
         # 4. Compute target Q-values using target networks (original lines 41-45)
         with torch.no_grad():
+
             target_q1, target_q2 = self.target_q_networks(next_states, next_actions_flat)
             if self.q_cfg.q_aggregation == 'min':
                 target_q = torch.min(target_q1, target_q2)
@@ -315,17 +337,18 @@ class QChunkingTrainer:
         with torch.no_grad():
             # Sample from BC policy (target flow actions)
             self.bc_vla.modality_scope = "lang"
-            obs_features_bc = self.bc_vla.encode_observations(batch)
+            obs_features_bc = self.bc_vla.encode_observations(dataset_batch)
             noise = torch.randn_like(actions, device=self.device)
             target_flow_actions = self.bc_vla.sample_actions(noise, obs_features_bc, inference=True)
 
         # Sample from RL policy (actor actions)
         self.rl_vla.modality_scope = "lang"
-        obs_features_rl = self.rl_vla.encode_observations(batch)
+        obs_features_rl = self.rl_vla.encode_observations(dataset_batch)
         actor_actions = self.rl_vla.sample_actions(noise, obs_features_rl, inference=False)
 
         # Distillation loss: make RL policy match BC policy
-        distill_loss = F.mse_loss(actor_actions, target_flow_actions.detach())
+        target_flow_actions = target_flow_actions.detach()
+        distill_loss = F.mse_loss(actor_actions, target_flow_actions)
 
         # 2. Q maximization loss - maximize Q-values for RL policy actions
         with torch.no_grad():
@@ -339,19 +362,19 @@ class QChunkingTrainer:
 
         # Get Q-values and maximize them (negative Q loss)
         q1, q2 = self.q_networks(current_states, actor_actions_flat)
-        q_mean = (q1 + q2) / 2  # Use mean of both Q-networks
-        q_value = q_mean.mean()  # Maximize Q-values (negative loss)
+        q_value = (q1 + q2) / 2  # Use mean of both Q-networks
 
+        # 确保q_value是标量
+        q_value = q_value.mean()  # 取平均，转为标量
 
         # Total RL actor loss: Distillation + Q maximization (NO BC flow loss)
-        total_loss = self.q_cfg.distill_loss_weight * distill_loss + self.q_cfg.q_value_loss_weight *(q_value)*(-1)
+        total_loss = self.q_cfg.distill_loss_weight * distill_loss + self.q_cfg.q_value_loss_weight *(-q_value)
 
-        return total_loss,q_value
+        return total_loss, q_value
 
     def compute_distillation_loss(self, batch: Dict[str, Any]) -> torch.Tensor:
         """Compute distillation loss between BC and RL policies using original VLA interface."""
         total_distill_loss = 0.0
-
 
         # Handle batch format properly
         if isinstance(batch, dict) and all(isinstance(v, dict) and 'actions' in v for v in batch.values()):
@@ -379,6 +402,8 @@ class QChunkingTrainer:
                     # Compute distillation loss
                     distill_loss = F.mse_loss(rl_actions, bc_actions)
                     total_distill_loss += distill_loss
+
+            total_loss=total_loss/len(batch)
 
         else:
             # Direct dataset_batch format (for replay buffer)
@@ -977,6 +1002,32 @@ def log_rank_0(*args, **kwargs):
 def setup_callbacks(callbacks_cfg: DictConfig) -> list[Callback]:
     return [hydra.utils.instantiate(cb) for cb in callbacks_cfg.values()]
 
+def _run_q_chunking_validation(rollout_callback, model, epoch, stage_name):
+    """Simple validation runner for Q-chunking - evaluate RL VLA and log results."""
+    skip_epochs = rollout_callback.skip_epochs
+    rollout_freq = rollout_callback.rollout_freq
+
+    should_validate = (epoch >= skip_epochs and (epoch - skip_epochs) % rollout_freq == 0)
+
+    if should_validate:
+        log_rank_0(f"Running validation at epoch {epoch} ({stage_name})")
+        try:
+            # Evaluate policy and get success rates
+            results = rollout_callback.evaluate_policy(model)
+            avg_success = sum(results) / len(results) if results else 0.0
+
+            # Log to wandb
+            wandb.log({
+                f"{stage_name}/validation_success_rate": avg_success,
+                f"{stage_name}/validation_epoch": epoch
+            })
+            log_rank_0(f" Validation success rate: {avg_success:.3f}")
+        except Exception as e:
+            log_rank_0(f"Validation failed: {e}")
+    else:
+        pass
+
+
 def setup_logger(cfg: DictConfig, model: LightningModule):
     pathlib_cwd = Path.cwd()
     if "group" in cfg.logger:
@@ -1009,10 +1060,22 @@ def _train_q_chunking_offline_stage(cfg: DictConfig, datamodule):
     datamodule.setup("fit")
     train_dataloader = datamodule.train_dataloader()['lang']
 
+
+    validation_callback= None
+    if hasattr(cfg,'callbacks') and 'rollout_hf' in cfg.callbacks:
+        validation_callback=hydra.utils.instantiate(cfg.callbacks.rollout_lh)
+        validation_callback.device=device
+
     # Save initial checkpoint before any training
     initial_checkpoint_path = Path.cwd() / "checkpoint_initial.pt"
     q_trainer.save_checkpoint(initial_checkpoint_path, cfg.checkpoint_type)
-    log_rank_0("✅ Saved initial checkpoint before training")
+    log_rank_0("Saved initial checkpoint before training")
+
+
+    if cfg.continue_training_ckpt is not None and Path(cfg.continue_training_ckpt).exists():
+        q_trainer.load_checkpoint(Path(cfg.continue_training_ckpt), 'full')
+        log_rank_0(f"continue training using {cfg.continue_training_ckpt}")
+
 
     # Train for configured epochs
     for epoch in range(cfg.max_epochs):
@@ -1020,8 +1083,12 @@ def _train_q_chunking_offline_stage(cfg: DictConfig, datamodule):
 
         epoch_metrics = {'bc_loss': 0.0,'q_value':0.0 ,'q_loss': 0.0, 'distill_loss': 0.0,'rl_actor_loss':0.0}
 
-        #加上日志打印
-        progress_bar=tqdm(train_dataloader,desc=f"Epoch {epoch + 1}/{cfg.max_epochs}")
+        if torch.distributed.get_rank() == 0:
+            progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch + 1}/{cfg.max_epochs}")
+        else:
+            progress_bar = train_dataloader
+
+
         for batch_idx, dataset_batch in enumerate(progress_bar):
             # Format batch for VLA
 
@@ -1033,6 +1100,15 @@ def _train_q_chunking_offline_stage(cfg: DictConfig, datamodule):
             for key, value in step_metrics.items():
                 epoch_metrics[key] += value
 
+            if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+                progress_bar.set_postfix({
+                    'bc_loss': step_metrics['bc_loss'],
+                    'q_loss': step_metrics['q_loss'],
+                    'distill_loss':step_metrics['distill_loss'],
+                    'q_value': step_metrics['q_value'],
+                    'rl_actor_loss': step_metrics['rl_actor_loss']
+                })
+
         # Average metrics and log to wandb
         for key in epoch_metrics:
             epoch_metrics[key] /= len(train_dataloader)
@@ -1043,11 +1119,14 @@ def _train_q_chunking_offline_stage(cfg: DictConfig, datamodule):
         wandb_metrics["offline/epoch"] = epoch + 1
         wandb.log(wandb_metrics)
 
+
+        if validation_callback:
+            _run_q_chunking_validation(validation_callback,q_trainer.rl_vla,epoch,"offline")
         # Save periodic checkpoints based on config save_freq
         if (epoch + 1) % cfg.q_chunking.checkpoint.save_freq == 0:
             checkpoint_path = Path.cwd() / f"checkpoint_epoch_{epoch+1}.pt"
             q_trainer.save_checkpoint(checkpoint_path, "full")
-            log_rank_0(f"✅ Saved checkpoint at epoch {epoch+1}")
+            log_rank_0(f" Saved checkpoint at epoch {epoch+1}")
 
     # Save final checkpoint
     checkpoint_path = Path.cwd() / "checkpoint_offline_complete.pt"
@@ -1070,7 +1149,6 @@ def _train_q_chunking_online_stage(cfg: DictConfig, datamodule, env=None):
     log_rank_0(f"Created BC VLA with {q_trainer.bc_vla.num_sampling_steps} sampling steps")
     log_rank_0(f"Created RL VLA with {q_trainer.rl_vla.num_sampling_steps} sampling steps")
 
-    # Load from offline stage if available
 
     offline_checkpoint = Path.cwd() / "checkpoint_offline_complete.pt"
     if offline_checkpoint.exists():
@@ -1078,10 +1156,21 @@ def _train_q_chunking_online_stage(cfg: DictConfig, datamodule, env=None):
         q_trainer.load_checkpoint(offline_checkpoint, "full")
         log_rank_0("Loaded offline stage checkpoint")
 
+    if cfg.continue_training_ckpt is not None and Path(cfg.continue_training_ckpt).exists():
+        q_trainer.load_checkpoint(Path(cfg.continue_training_ckpt), 'full')
+        log_rank_0(f"continue training using {cfg.continue_training_ckpt}")
+
+
 
     # Setup data
     datamodule.setup("fit")
     train_dataloader = datamodule.train_dataloader()['lang']
+
+    validation_callback = None
+    if hasattr(cfg,'callbacks') and 'rollout_lh' in cfg.callbacks:
+        validation_callback = hydra.utils.instantiate(cfg.callbacks.rollout_lh)
+        validation_callback.device=device
+
     initial_checkpoint_path = Path.cwd() / "checkpoint_initial.pt"
     q_trainer.save_checkpoint(initial_checkpoint_path, cfg.checkpoint_type)
 
@@ -1095,8 +1184,13 @@ def _train_q_chunking_online_stage(cfg: DictConfig, datamodule, env=None):
             log_rank_0(f"Collected {transitions_collected} transitions")
 
         epoch_metrics = {'bc_loss': 0.0, 'q_value':0.0, 'q_loss': 0.0, 'distill_loss': 0.0,'rl_actor_loss':0.0}
-        progress_bar=tqdm(train_dataloader,desc=f'Epoch {epoch+1}/{cfg.max_epochs}')
 
+
+
+        if torch.distributed.get_rank() == 0:
+            progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch + 1}/{cfg.max_epochs}")
+        else:
+            progress_bar = train_dataloader
 
         for batch_idx, dataset_batch in enumerate(progress_bar):
 
@@ -1111,6 +1205,16 @@ def _train_q_chunking_online_stage(cfg: DictConfig, datamodule, env=None):
             for key, value in step_metrics.items():
                 epoch_metrics[key] += value
 
+
+            if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+                progress_bar.set_postfix({
+                    'bc_loss': step_metrics['bc_loss'],
+                    'q_loss': step_metrics['q_loss'],
+                    'distill_loss':step_metrics['distill_loss'],
+                    'q_value': step_metrics['q_value'],
+                    'rl_actor_loss': step_metrics['rl_actor_loss']
+                })
+
         # Average metrics and log to wandb
         for key in epoch_metrics:
             epoch_metrics[key] /= len(train_dataloader)
@@ -1124,10 +1228,14 @@ def _train_q_chunking_online_stage(cfg: DictConfig, datamodule, env=None):
         wandb_metrics["online/replay_buffer_size"] = len(q_trainer.replay_buffer)
         wandb.log(wandb_metrics)
 
+
+        if validation_callback:
+            _run_q_chunking_validation(validation_callback,q_trainer.rl_vla)
+
         if (epoch + 1) % cfg.q_chunking.checkpoint.save_freq == 0:
             checkpoint_path = Path.cwd() / f"checkpoint_epoch_{epoch+1}.pt"
             q_trainer.save_checkpoint(checkpoint_path, cfg.checkpoint_type)
-            log_rank_0(f"✅ Saved checkpoint at epoch {epoch+1}")
+            log_rank_0(f" Saved checkpoint at epoch {epoch+1}")
 
 
     checkpoint_path = Path.cwd() / "checkpoint_online_complete.pt"
@@ -1232,7 +1340,7 @@ def _q_chunking_online_step(q_trainer, batch: Dict[str, Any]) -> Dict[str, float
     q_trainer.rl_optimizer.step()
 
     q_trainer.q_optimizer.zero_grad()
-    q_loss=q_trainer.compute_q_value_loss()
+    q_loss=q_trainer.compute_q_value_loss(mixed_batch)
     q_loss.backward()
     q_trainer.q_optimizer.step()
 
@@ -1253,7 +1361,7 @@ def _q_chunking_online_step(q_trainer, batch: Dict[str, Any]) -> Dict[str, float
 
 def train_q_chunking(cfg: DictConfig, datamodule):
     """Main Q-chunking training coordinator that routes to correct training stages."""
-    log_rank_0(f"🚀 Starting Q-chunking training: {cfg.training_choice}")
+    log_rank_0(f" Starting Q-chunking training: {cfg.training_choice}")
 
     env = None
 
@@ -1267,17 +1375,17 @@ def train_q_chunking(cfg: DictConfig, datamodule):
 
 
     if cfg.training_choice == "offline":
-        log_rank_0("🔥 Starting Q-chunking OFFLINE stage")
+        log_rank_0(" Starting Q-chunking OFFLINE stage")
         _train_q_chunking_offline_stage(cfg, datamodule)
 
 
     elif cfg.training_choice == "online":
-        log_rank_0("🌐 Starting Q-chunking ONLINE stage")
+        log_rank_0("Starting Q-chunking ONLINE stage")
         _train_q_chunking_online_stage(cfg, datamodule, env)
 
 
     elif cfg.training_choice == "offline2online":
-        log_rank_0("🔄 Starting Q-chunking OFFLINE-TO-ONLINE sequential training")
+        log_rank_0("Starting Q-chunking OFFLINE-TO-ONLINE sequential training")
         log_rank_0("Phase 1: Offline RL stage")
         _train_q_chunking_offline_stage(cfg, datamodule)
         log_rank_0("Phase 2: Online RL stage")
@@ -1323,8 +1431,7 @@ def train(cfg: DictConfig) -> None:
 
         # Route training based on training_choice: BC/offline/online/offline2online
         if hasattr(cfg, 'training_choice') and cfg.training_choice != "BC":
-            log_rank_0(f"🚀 Q-Chunking RL training mode: {cfg.training_choice}")
-            log_rank_0("Bypassing PyTorch Lightning - using custom Q-chunking training loop")
+            log_rank_0(f"Q-Chunking RL training mode: {cfg.training_choice}")
 
             # Get current timestamp for consistent directory naming
             timestamp = datetime.now().strftime("%H-%M-%S")
@@ -1372,11 +1479,11 @@ def train(cfg: DictConfig) -> None:
 
         elif cfg.training_choice == "BC":
             # Original Flower-VLA BC training path (no Q-chunking)
-            log_rank_0("📚 BC MODE: Using original Flower-VLA imitation learning with PyTorch Lightning")
+            log_rank_0(" BC MODE: Using original Flower-VLA imitation learning with PyTorch Lightning")
 
-            # Get current timestamp for consistent directory naming
+
             timestamp = datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
-            # Create logs directory with timestamp and training choice
+
             base_path = Path.cwd()
             log_dir = base_path
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -1399,7 +1506,7 @@ def train(cfg: DictConfig) -> None:
             work_dir.mkdir(exist_ok=True)
             os.chdir(work_dir)
 
-            log_rank_0(f"💾 Logs will be saved to: {log_dir}")
+            log_rank_0(f" Logs will be saved to: {log_dir}")
 
             trainer_args = {
                 **cfg.trainer,

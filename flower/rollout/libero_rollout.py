@@ -6,8 +6,6 @@ import os
 from typing import Any
 from time import time
 import gc
-
-
 import hydra
 from tqdm import tqdm
 from omegaconf import DictConfig, OmegaConf
@@ -22,7 +20,7 @@ from libero.libero.envs import OffScreenRenderEnv, SubprocVectorEnv, DummyVector
 from libero.lifelong.metric import raw_obs_to_tensor_obs, evaluate_multitask_training_success
 from libero.lifelong.utils import (get_task_embs, safe_device, create_experiment_dir)
 
-# import cv2
+import cv2
 # from pathlib import Path
 # import sys
 # sys.path.insert(0, Path(__file__).absolute().parents[2].as_posix())

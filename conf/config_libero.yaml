@@ -23,7 +23,7 @@ obs_seq_len: 1
 act_seq_len: 10
 multistep: ${act_seq_len}
 p_last_state: 0
-max_epochs: 50
+max_epochs: 30
 rollout_lh_skip_epochs: 9
 num_workers: 4
 benchmark_name: ${libero_benchmark} # calvin_abcd
@@ -33,7 +33,7 @@ libero_benchmark: libero_spatial # libero_goal # libero_spatial, libero_object, 
 training_choice: "offline"  # BC, offline, online, offline2online
 checkpoint_type: "full"     # full, rl_only, bc_only
 
-
+continue_training_ckpt: None
 
 
 # q_cfg
@@ -183,7 +183,7 @@ q_chunking:
 
   # Training stage specific parameters
   offline:
-  max_epochs: 50
+  max_epochs: 30
 
   online:
     # Online RL: Add environment interaction and replay buffer
@@ -218,16 +218,12 @@ q_chunking:
   q_loss_weight: 1.0
   distillation_loss_weight: 1.0
 
-  # Exploration (for online training)
-  exploration:
-    type: "epsilon_greedy"  # or "gaussian_noise"
-    initial_epsilon: 1.0
-    final_epsilon: 0.1
-    decay_steps: 10000
+
+
 
   # Evaluation configuration
   evaluation:
-    eval_freq: 10  # Evaluate every N epochs
+    eval_freq: 1  # Evaluate every N epochs
     eval_episodes: 10
     eval_deterministic: true
     save_videos: true
@@ -241,7 +237,7 @@ q_chunking:
 
   # Checkpoint configuration
   checkpoint:
-    save_freq: 10  # Save every N epochs
+    save_freq: 5  # Save every N epochs
     keep_separate: true  # Keep BC, RL, and full checkpoints separate
     auto_resume: true  # Automatically resume from latest checkpoint
 

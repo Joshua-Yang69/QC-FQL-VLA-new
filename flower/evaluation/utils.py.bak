@@ -158,17 +158,6 @@ def get_default_model_and_env(train_folder, dataset_path, checkpoint, env=None, 
 def get_default_mode_and_env(train_folder, dataset_path, checkpoint, env=None, lang_embeddings=None, prep_dm_and_deps=True, device_id=0, eval_cfg_overwrite={}):
     # Fix for the path issue - ensure we're working with the directory containing the config
     train_folder_path = Path(train_folder)
-    # --- PATCH: prefer HF checkpoint dir if provided ---
-    from pathlib import Path as _PatchPath
-    ckpt_obj = _PatchPath(checkpoint).expanduser()
-    if ckpt_obj.is_dir() and (ckpt_obj / "config.yaml").exists():
-        train_folder_path = ckpt_obj
-        print(f"[patch] Using HF checkpoint dir as train_folder: {train_folder_path}")
-    elif ckpt_obj.is_file() and ckpt_obj.name == "model.safetensors" and (ckpt_obj.parent / "config.yaml").exists():
-        train_folder_path = ckpt_obj.parent
-        print(f"[patch] Using HF parent dir as train_folder: {train_folder_path}")
-    # --- END PATCH ---
-
     
     # If the train_folder is already pointing to a .yaml file, use its parent directory
     if train_folder_path.suffix == '.yaml':
@@ -324,18 +313,17 @@ def load_mode_from_safetensor(
     print(f"Loading model from {ckpt_path}")
     
     # Handle different config structures
-    from omegaconf import DictConfig
-
     if _is_hf_format(config_path):
-    # Prefer the 'model' subtree if present (OmegaConf: use `'model' in config` not hasattr)
-        if isinstance(config, DictConfig) and 'model' in config:
-            model_conf = OmegaConf.to_object(config.model)
+        # HuggingFace format - but config still has nested structure with 'model' key
+        if hasattr(config, 'model'):
+            load_cfg = OmegaConf.create({**OmegaConf.to_object(config.model), **{"optimizer": None}, **overwrite_cfg})
         else:
-            model_conf = OmegaConf.to_object(config)
-        load_cfg = OmegaConf.create({**model_conf, **{"optimizer": None}, **overwrite_cfg})
+            # Fallback: config is directly the model config
+            load_cfg = OmegaConf.create({**OmegaConf.to_object(config), **{"optimizer": None}, **overwrite_cfg})
     else:
+        # Hydra format - model config is under 'model' key
         load_cfg = OmegaConf.create({**OmegaConf.to_object(config.model), **{"optimizer": None}, **overwrite_cfg})
-
+    
     # Remove 'ckpt_path' if it exists in load_cfg to avoid the error
     if 'ckpt_path' in load_cfg:
         del load_cfg['ckpt_path']
