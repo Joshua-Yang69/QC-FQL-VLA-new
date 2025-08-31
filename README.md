@@ -1,6 +1,6 @@
-# FlowerVLA
+# FlowerVLA-QC-FQL
 
-[Paper](), [Project Page](), 
+[Paper](), [Project Page](),
 
 [Moritz Reuss](https://mbreuss.github.io/)<sup>1</sup>,
 [Hongyi Zhou](https://hongyizhoucn.github.io/)<sup>1</sup>,
@@ -20,7 +20,7 @@ FLOWER VLA is a lightweight, efficient Vision-Language-Action (VLA) policy for r
 - **Efficient Architecture**: At ~1B parameters, FLOWER is significantly smaller than most VLA models
 - **Low Training Cost**: Only requires ~200 GPU hours of pretraining
 - **Low Memory Footprint**: Uses <3GB of GPU memory for inference with single image setting
-- **SOTA Performance**: Achieves sota results on CALVIN and LIBERO benchmarks 
+- **SOTA Performance**: Achieves sota results on CALVIN and LIBERO benchmarks
 
 **NEW: Q-Chunking Reinforcement Learning Integration**
 This repository now includes a complete integration of the Q-Chunking RL algorithm for improved action chunking performance:
@@ -34,16 +34,16 @@ For the pretraining of FLOWER and finetuning for Aloha check out our other codeb
 
 ## Model Overview
 
-FLOWER VLA uses a Florence-2-large-based VLM combined with a rectified flow architecture to predict robot actions from visual observations and language instructions. 
+FLOWER VLA uses a Florence-2-large-based VLM combined with a rectified flow architecture to predict robot actions from visual observations and language instructions.
 The model efficiently handles multi-step action sequences through a chunking mechanism.
 
 [Insert model architecture diagram here]
 
 Key architectural components:
 - Florence-2 DaVit Image Encoder [350M params]
-- Language conditioning through cross-attention 
+- Language conditioning through cross-attention
 - Half of the Florence-2 LLM layers for vision and language fusion [205M]
-- Rectified Flow Predition for fast action generation (all results in CALVIN and LIBERO are achieved using just 4 denoising steps) 
+- Rectified Flow Predition for fast action generation (all results in CALVIN and LIBERO are achieved using just 4 denoising steps)
 - Global AdaLN for parameter efficient conditioning
 - Action chunking for multi-step action generation
 
@@ -57,8 +57,8 @@ export flower_calvin_ROOT=$(pwd)/flower_vla_calvin
 ```
 Install requirements
 (Note we provided a changed verison of pyhash, given numerous problems we encountered when installing it manually on our slurm cluster)
-You can also try to install setup tools using pip. 
- 
+You can also try to install setup tools using pip.
+
 ```bash
 cd $flower_calvin_ROOT
 conda create -n flower_cal python=3.9
@@ -101,7 +101,7 @@ sh download_data.sh D | ABCD
 ### Original FLOWER VLA Training
 To train the original FLOWER VLA with 4 GPUs, run:
 ```bash
-python flower/training.py 
+python flower/training.py
 ```
 
 ### Q-Chunking Training (NEW)
@@ -124,7 +124,7 @@ python flower/training_libero.py q_chunking.enabled=true q_chunking.training_sta
 
 #### Key Q-Chunking Configuration Parameters:
 - `q_chunking.enabled`: Enable Q-chunking training (default: true)
-- `q_chunking.training_stage`: Training mode - "offline", "online", or "offline-to-online"  
+- `q_chunking.training_stage`: Training mode - "offline", "online", or "offline-to-online"
 - `q_chunking.chunk_size`: Action chunk size (default: same as act_seq_len)
 - `q_chunking.discount_factor`: RL discount factor (default: 0.99)
 - `q_chunking.replay_buffer_size`: Replay buffer capacity (default: 100000)
@@ -143,24 +143,117 @@ python flower/evaluation/flower_eval_libero.py checkpoint=/path/to/model.ckpt
 
 ### Q-Chunking Model Evaluation (NEW)
 Evaluate BC VLA model:
-```bash  
+```bash
 python flower/evaluation/flower_eval_libero.py checkpoint=/path/to/checkpoint.pt q_chunking_model_type=bc_vla
 ```
 
 Evaluate RL VLA model:
 ```bash
-python flower/evaluation/flower_eval_libero.py checkpoint=/path/to/checkpoint.pt q_chunking_model_type=rl_vla  
+python flower/evaluation/flower_eval_libero.py checkpoint=/path/to/checkpoint.pt q_chunking_model_type=rl_vla
 ```
 
 The evaluation automatically detects checkpoint format (.ckpt vs .pt) and loads the appropriate model.
 
 ## Checkpoint Management
 
-Q-Chunking training generates three types of checkpoints:
+### Checkpoint Types and Formats
 
-1. **BC VLA Only**: `bc_checkpoint_epoch_X.pt` - Contains only behavior cloning model
-2. **RL VLA Only**: `rl_checkpoint_epoch_X.pt` - Contains only RL policy model  
-3. **Full Model**: `full_checkpoint_epoch_X.pt` - Contains BC VLA, RL VLA, Q-networks, and replay buffer
+Q-Chunking training generates multiple checkpoint formats for maximum compatibility:
+
+#### 1. PyTorch Lightning Checkpoints (.pt files)
+- **BC VLA Only**: `bc_checkpoint_epoch_X.pt` - Contains only behavior cloning model
+- **RL VLA Only**: `rl_checkpoint_epoch_X.pt` - Contains only RL policy model
+- **Full Model**: `full_checkpoint_epoch_X.pt` - Contains BC VLA, RL VLA, Q-networks, replay buffer, and all optimizer states
+
+#### 2. HuggingFace Format (Automatic)
+For each .pt checkpoint, the system automatically creates HuggingFace-compatible model directories:
+```
+hf_models_epoch_X/
+├── bc_vla/
+│   ├── model.safetensors      # BC VLA weights
+│   ├── model.pt               # Fallback format
+│   ├── config.yaml            # Model configuration for evaluation
+│   └── README.md              # Model documentation
+└── rl_vla/
+    ├── model.safetensors      # RL VLA weights
+    ├── model.pt               # Fallback format
+    ├── config.yaml            # Model configuration for evaluation
+    └── README.md              # Model documentation
+```
+
+### Checkpoint Configuration
+
+Configure checkpoint behavior in your training config:
+```yaml
+q_chunking:
+  checkpoint:
+    save_freq: 5                    # Save every N epochs
+    keep_separate: true             # Keep BC, RL, and full checkpoints separate
+    auto_resume: true               # Automatically resume from latest checkpoint
+```
+
+### Loading Checkpoints for Evaluation
+
+The evaluation script automatically detects and loads the appropriate checkpoint format:
+
+#### From PyTorch Lightning checkpoints:
+```bash
+# Load BC VLA model
+python flower/evaluation/flower_eval_libero.py checkpoint=/path/to/bc_checkpoint_epoch_X.pt
+
+# Load RL VLA model
+python flower/evaluation/flower_eval_libero.py checkpoint=/path/to/rl_checkpoint_epoch_X.pt q_chunking_model_type=rl_vla
+
+# Load from full checkpoint (defaults to BC VLA)
+python flower/evaluation/flower_eval_libero.py checkpoint=/path/to/full_checkpoint_epoch_X.pt
+```
+
+#### From HuggingFace format:
+```bash
+# Load BC VLA from HuggingFace directory
+python flower/evaluation/flower_eval_libero.py checkpoint=/path/to/hf_models_epoch_X/bc_vla/
+
+# Load RL VLA from HuggingFace directory
+python flower/evaluation/flower_eval_libero.py checkpoint=/path/to/hf_models_epoch_X/rl_vla/ q_chunking_model_type=rl_vla
+```
+
+### Resuming Training
+
+To resume training from a saved checkpoint:
+```bash
+# Resume from specific checkpoint
+python flower/training_libero.py q_chunking.enabled=true resume_from=/path/to/full_checkpoint_epoch_X.pt
+
+# Auto-resume from latest checkpoint (if auto_resume=true)
+python flower/training_libero.py q_chunking.enabled=true  # Automatically finds latest checkpoint
+```
+
+### Checkpoint Contents
+
+**BC-only checkpoints** contain:
+- BC VLA model weights and hyperparameters
+- BC optimizer state
+- Training metadata (epoch, global_step)
+
+**RL-only checkpoints** contain:
+- RL VLA model weights and hyperparameters
+- RL optimizer state
+- Training metadata
+
+**Full checkpoints** contain:
+- Both BC and RL VLA models
+- Q-networks and target Q-networks
+- All optimizer states (BC, RL, Q-network)
+- Replay buffer state
+- Complete training metadata
+
+### Compatibility with Original FLOWER Evaluation
+
+All saved models are fully compatible with the original FLOWER evaluation pipeline:
+- Standard `state_dict` format for seamless loading
+- Proper `hyper_parameters` preservation
+- Compatible configuration structure
+- No variable name conflicts with original implementation
 
 Use `checkpoint_latest.pt` to resume training from the last saved state.
 
@@ -201,7 +294,7 @@ Thanks to @ygtxr1997 for debugging the GPU utilization and providing a merge req
 
 ## Evaluation
 
-Download the pretrained FLOWER from Hugging Face: 
+Download the pretrained FLOWER from Hugging Face:
 You can find all checkpoints under:
 
 - [FLOWER Collection](https://huggingface.co/collections/mbreuss/flower-vla-67d60e95bf2990699fcef81f)
@@ -241,10 +334,10 @@ FLOWER achieves strong performance across all LIBERO benchmarks:
 | Benchmark | FLOWER Success Rate |
 |-----------|---------------------|
 | LIBERO-10 | 94.5% |
-| LIBERO-90 | 93.4% | 
+| LIBERO-90 | 93.4% |
 | LIBERO-SPATIAL | 97.2% |
-| LIBERO-OBJECT | 99.3% | 
-| LIBERO-GOAL | 96.9% | 
+| LIBERO-OBJECT | 99.3% |
+| LIBERO-GOAL | 96.9% |
 
 
 #### Common Issues
@@ -273,7 +366,7 @@ Original: [https://github.com/Lifelong-Robot-Learning/LIBERO](https://github.com
 
 License: [https://github.com/Lifelong-Robot-Learning/LIBERO?tab=MIT-1-ov-file](https://github.com/Lifelong-Robot-Learning/LIBERO?tab=MIT-1-ov-file)
 
-#### Mimictest 
+#### Mimictest
 
 Original: [mimictest](https://github.com/EDiRobotics/mimictest)
 License: [license](https://github.com/EDiRobotics/mimictest?tab=Apache-2.0-1-ov-file)
@@ -287,7 +380,7 @@ License: [MIT](https://github.com/lukashermann/hulc/blob/main/LICENSE)
 
 Original: [https://github.com/intuitive-robots/FLOWER_Diffusion_Policy](https://github.com/intuitive-robots/FLOWER_Diffusion_Policy)
 
-License: [https://github.com/intuitive-robots/FLOWER_Diffusion_Policy/blob/main/LICENSE](https://github.com/intuitive-robots/FLOWER_Diffusion_Policy/blob/main/LICENSE) 
+License: [https://github.com/intuitive-robots/FLOWER_Diffusion_Policy/blob/main/LICENSE](https://github.com/intuitive-robots/FLOWER_Diffusion_Policy/blob/main/LICENSE)
 
 
 ## Citation

@@ -96,6 +96,8 @@ def print_and_save(total_results, plan_dicts, cfg, log_dir=None):
         current_data[epoch] = data
 
         print()
+
+        
     previous_data = {}
     try:
         with open(log_dir / "results.json", "r") as file:
@@ -224,7 +226,7 @@ def rollout(env, model, task_oracle, cfg, subtask, lang_embeddings, val_annotati
 def main(cfg):
     log_wandb = cfg.log_wandb
     # torch.cuda.set_device(cfg.device)
-    seed_everything(0, workers=True) 
+    seed_everything(0, workers=True)
     lang_embeddings = None
     env = None
     results = {}
@@ -264,7 +266,7 @@ def main(cfg):
 
     results[Path(cfg.checkpoint)], plans[Path(cfg.checkpoint)] = evaluate_policy(model, env, lang_embeddings, cfg, num_videos=cfg.num_videos, save_dir=Path(log_dir))
     print_and_save(results, plans, cfg, log_dir=log_dir)
-    
+
     if log_wandb:
         run.finish()
 

@@ -11,19 +11,18 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-
 from pytorch_lightning import Callback, LightningModule, seed_everything, Trainer
 from pytorch_lightning.callbacks import LearningRateMonitor
-
 from pytorch_lightning.utilities import rank_zero_only
 import copy
 from tqdm import tqdm
 import numpy as np
 from typing import Dict, Any, Optional, Tuple
-import wandb
-import pytorch_lighting
+import pytorch_lightning as pl
+
 # This is for using the locally installed repo clone when using slurm
 sys.path.insert(0, Path(__file__).absolute().parents[1].as_posix())
+
 import flower.models.flower as models_m
 from flower.models.q_networks import DoubleQNetwork
 from flower.models.replay_buffer import SequenceReplayBuffer
@@ -36,6 +35,9 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+
+
+
 logger = logging.getLogger(__name__)
 
 class QChunkingTrainer:
@@ -110,8 +112,6 @@ class QChunkingTrainer:
         # 2. RL VLA (identical to BC VLA, used for Q-learning) with 1 sampling step for fast online training
         self.rl_vla = hydra.utils.instantiate(self.q_cfg.models.rl_vla, **base_model_cfg).to(self.device)
 
-
-
         logger.info(f"Initialized RL VLA with {self.rl_vla.num_sampling_steps} sampling step")
 
         # 3. Q-networks (DoubleQNetwork already contains two Q-networks internally)
@@ -129,7 +129,6 @@ class QChunkingTrainer:
         self.target_q_networks = copy.deepcopy(self.q_networks)
         logger.info("Initialized target Q-networks")
 
-
         # 5. Setup replay buffer
         self.replay_buffer = SequenceReplayBuffer(
             capacity=self.q_cfg.replay_buffer_size,
@@ -137,6 +136,7 @@ class QChunkingTrainer:
             device=self.device
         )
         logger.info("Initialized replay buffer")
+
 
     def setup_optimizers(self):
         """Setup optimizers for all models using FlowerVLA's built-in method."""
@@ -157,15 +157,18 @@ class QChunkingTrainer:
         )
 
         logger.info("Setup optimizers")
-
+    # 应该是对的
     def compute_bc_flow_matching_loss(self, batch: Dict[str, Any], model) -> torch.Tensor:
         """Compute behavior cloning flow matching loss using original VLA interface."""
         total_loss = 0.0
 
         # Handle original dataloader format: {"lang": {dataset_batch}}
+
         if isinstance(batch, dict) and all(isinstance(v, dict)  for v in batch.values()):
+            #这个v取出的是“lang”的一个batch
             # Original batch format from dataloader
             for modality_scope, dataset_batch in batch.items():
+                #
                 if isinstance(dataset_batch, dict) and 'actions' in dataset_batch:
                     # Use original VLA interface exactly as designed
                     model.modality_scope = modality_scope
@@ -302,9 +305,9 @@ class QChunkingTrainer:
             self.bc_vla.modality_scope = modality_scope
             self.rl_vla.modality_scope = modality_scope
         else:
-            datasets_batch = batch
+            dataset_batch = batch
             self.bc_vla.modality_scope = 'lang'
-            self.bc_vla.modality_scope = 'lang'
+            self.rl_vla.modality_scope = 'lang'
 
         actions = dataset_batch['actions'].to(self.device)
 
@@ -339,8 +342,9 @@ class QChunkingTrainer:
         q_mean = (q1 + q2) / 2  # Use mean of both Q-networks
         q_value = q_mean.mean()  # Maximize Q-values (negative loss)
 
+
         # Total RL actor loss: Distillation + Q maximization (NO BC flow loss)
-        total_loss = self.q_cfg.bc_distill_loss_weight * distill_loss + self.q_cfg.q_value_loss_weight *(q_value)*(-1)
+        total_loss = self.q_cfg.distill_loss_weight * distill_loss + self.q_cfg.q_value_loss_weight *(q_value)*(-1)
 
         return total_loss,q_value
 
@@ -434,7 +438,7 @@ class QChunkingTrainer:
             'training_stage': self.training_stage,
             'offline_steps': self.offline_steps,
             'online_steps': self.online_steps,
-            'pytorch-lightning_version': pytorch_lightning.__version__,
+            'pytorch-lightning_version': pl.__version__,
             'callbacks': {},
             'config': self.cfg
         }
@@ -455,6 +459,8 @@ class QChunkingTrainer:
                     'state_dict': self.rl_vla.state_dict(),  # Main model state_dict for evaluation
                     'hyper_parameters': self.rl_vla.hparams,
                 })
+
+
             checkpoint_data.update({
                 'rl_vla_state_dict': self.rl_vla.state_dict(),
                 'rl_optimizer_state_dict': self.rl_optimizer.state_dict(),
@@ -485,7 +491,7 @@ class QChunkingTrainer:
         try:
             # Import dependencies
             try:
-                from safetensors.torch import save_file
+                from safetensors.torch import save_model
             except ImportError:
                 logger.warning("safetensors not available, skipping HuggingFace format")
                 return
@@ -498,9 +504,10 @@ class QChunkingTrainer:
                 bc_dir = base_dir / "bc_vla"
                 bc_dir.mkdir(parents=True, exist_ok=True)
 
+
                 # Save model in both formats for compatibility
-                torch.save({'state_dict': self.bc_vla.state_dict()}, bc_dir / "model.pt")
-                save_file(self.bc_vla.state_dict(), bc_dir / "model.safetensors")
+               # torch.save({'state_dict': self.bc_vla.state_dict()}, bc_dir / "model.pt")
+                save_model(self.bc_vla, bc_dir / "model.safetensors")
 
                 # Create config.yaml (not JSON) for evaluation script compatibility
                 model_config = {
@@ -542,7 +549,7 @@ class QChunkingTrainer:
                 rl_dir.mkdir(parents=True, exist_ok=True)
 
                 torch.save({'state_dict': self.rl_vla.state_dict()}, rl_dir / "model.pt")
-                save_file(self.rl_vla.state_dict(), rl_dir / "model.safetensors")
+                save_model(self.rl_vla, rl_dir / "model.safetensors")
 
                 # Create config.yaml for evaluation script compatibility
                 model_config = {
@@ -577,6 +584,54 @@ class QChunkingTrainer:
                     f.write(f"# FLOWER VLA RL Model\n\n")
                     f.write(f"Saved from Q-Chunking training checkpoint: {checkpoint_path.name}\n")
                     f.write(f"Model type: RL VLA with {getattr(self.rl_vla, 'num_sampling_steps', 1)} sampling step\n")
+            '''
+            if checkpoint_type in [ "full"]:
+                # Save BC VLA in HuggingFace format for evaluation
+                q_dir = base_dir / "q_networks"
+                q_dir.mkdir(parents=True, exist_ok=True)
+
+                # Save model in both formats for compatibility
+               # torch.save({'state_dict': self.bc_vla.state_dict()}, bc_dir / "model.pt")
+                save_model(self.q_networks, q_dir / "model.safetensors")
+
+                # Create config.yaml (not JSON) for evaluation script compatibility
+                model_config = {
+                    "model": {
+                        "_target_": "flower.models.q_networks.DoubleQNetwork",
+                        "_recursive_": False,
+                        "state_dim": 1024 , # VLA encoder output dimension
+
+                        "hidden_dim": 512,
+                        "n_layers": 3,
+                        "dropout": 0.1,
+
+
+
+                        # Copy other essential parameters from hparams if available
+                        **({k: v for k, v in self.bc_vla.hparams.items()
+                           if k in ['vlm_path', 'dit_dim', 'n_heads', 'n_layers', 'use_second_view',
+                                   'second_view_key', 'multistep', 'use_causal_attention', 'use_cross_attn']}
+                          if hasattr(self.bc_vla, 'hparams') else {}),
+                    },
+                    "datamodule": {
+                        "datasets": {
+                            "lang_dataset": {
+                                "lang_folder": "lang_clip_resnet50"
+                            }
+                        }
+                    }
+                }
+
+                # Save as YAML for evaluation script compatibility
+                with open(bc_dir / "config.yaml", 'w') as f:
+                    OmegaConf.save(config=model_config, f=f)
+
+                # Also create model card
+                with open(bc_dir / "README.md", 'w') as f:
+                    f.write(f"# FLOWER VLA BC Model\n\n")
+                    f.write(f"Saved from Q-Chunking training checkpoint: {checkpoint_path.name}\n")
+                    f.write(f"Model type: BC VLA with {getattr(self.bc_vla, 'num_sampling_steps', 4)} sampling steps\n")
+                '''
 
             logger.info(f"Saved models in HuggingFace format: {base_dir}")
 
@@ -956,14 +1011,14 @@ def _train_q_chunking_offline_stage(cfg: DictConfig, datamodule):
 
     # Save initial checkpoint before any training
     initial_checkpoint_path = Path.cwd() / "checkpoint_initial.pt"
-    q_trainer.save_checkpoint(initial_checkpoint_path, "full")
+    q_trainer.save_checkpoint(initial_checkpoint_path, cfg.checkpoint_type)
     log_rank_0("✅ Saved initial checkpoint before training")
 
     # Train for configured epochs
     for epoch in range(cfg.max_epochs):
         log_rank_0(f"Offline Epoch {epoch + 1}/{cfg.max_epochs}")
 
-        epoch_metrics = {'bc_loss': 0.0, 'rl_bc_loss': 0.0, 'q_loss': 0.0, 'distill_loss': 0.0}
+        epoch_metrics = {'bc_loss': 0.0,'q_value':0.0 ,'q_loss': 0.0, 'distill_loss': 0.0,'rl_actor_loss':0.0}
 
         #加上日志打印
         progress_bar=tqdm(train_dataloader,desc=f"Epoch {epoch + 1}/{cfg.max_epochs}")
@@ -996,8 +1051,9 @@ def _train_q_chunking_offline_stage(cfg: DictConfig, datamodule):
 
     # Save final checkpoint
     checkpoint_path = Path.cwd() / "checkpoint_offline_complete.pt"
-    q_trainer.save_checkpoint(checkpoint_path, "full")
+    q_trainer.save_checkpoint(checkpoint_path, cfg.checkpoint_type)
     log_rank_0("Q-chunking offline stage completed")
+
 
 def _train_q_chunking_online_stage(cfg: DictConfig, datamodule, env=None):
     """
@@ -1015,14 +1071,19 @@ def _train_q_chunking_online_stage(cfg: DictConfig, datamodule, env=None):
     log_rank_0(f"Created RL VLA with {q_trainer.rl_vla.num_sampling_steps} sampling steps")
 
     # Load from offline stage if available
+
     offline_checkpoint = Path.cwd() / "checkpoint_offline_complete.pt"
     if offline_checkpoint.exists():
+
         q_trainer.load_checkpoint(offline_checkpoint, "full")
         log_rank_0("Loaded offline stage checkpoint")
+
 
     # Setup data
     datamodule.setup("fit")
     train_dataloader = datamodule.train_dataloader()['lang']
+    initial_checkpoint_path = Path.cwd() / "checkpoint_initial.pt"
+    q_trainer.save_checkpoint(initial_checkpoint_path, cfg.checkpoint_type)
 
     # Train for configured epochs
     for epoch in range(cfg.max_epochs):
@@ -1033,7 +1094,7 @@ def _train_q_chunking_online_stage(cfg: DictConfig, datamodule, env=None):
             transitions_collected = q_trainer.collect_online_transitions()
             log_rank_0(f"Collected {transitions_collected} transitions")
 
-        epoch_metrics = {'bc_loss': 0.0, 'rl_bc_loss': 0.0, 'q_loss': 0.0, 'distill_loss': 0.0}
+        epoch_metrics = {'bc_loss': 0.0, 'q_value':0.0, 'q_loss': 0.0, 'distill_loss': 0.0,'rl_actor_loss':0.0}
         progress_bar=tqdm(train_dataloader,desc=f'Epoch {epoch+1}/{cfg.max_epochs}')
 
 
@@ -1063,6 +1124,14 @@ def _train_q_chunking_online_stage(cfg: DictConfig, datamodule, env=None):
         wandb_metrics["online/replay_buffer_size"] = len(q_trainer.replay_buffer)
         wandb.log(wandb_metrics)
 
+        if (epoch + 1) % cfg.q_chunking.checkpoint.save_freq == 0:
+            checkpoint_path = Path.cwd() / f"checkpoint_epoch_{epoch+1}.pt"
+            q_trainer.save_checkpoint(checkpoint_path, cfg.checkpoint_type)
+            log_rank_0(f"✅ Saved checkpoint at epoch {epoch+1}")
+
+
+    checkpoint_path = Path.cwd() / "checkpoint_online_complete.pt"
+    q_trainer.save_checkpoint(checkpoint_path, cfg.checkpoint_type)
     log_rank_0("Q-chunking online stage completed")
 
 
@@ -1070,7 +1139,9 @@ def _q_chunking_offline_step(q_trainer, batch: Dict[str, Any]) -> Dict[str, floa
     """Execute one offline training step: BC + RL learning from dataset only."""
     metrics = {}
 
-    # 1. BC learns from dataset
+    batch=batch['lang'] if isinstance(batch,dict) and 'lang' in batch else batch
+
+     # 1. BC learns from dataset
     bc_loss = q_trainer.compute_bc_flow_matching_loss(batch, q_trainer.bc_vla)
     q_trainer.bc_optimizer.zero_grad()
 
@@ -1080,8 +1151,8 @@ def _q_chunking_offline_step(q_trainer, batch: Dict[str, Any]) -> Dict[str, floa
     metrics['bc_loss'] = bc_loss.item()
 
     # 2. Q-networks learn from dataset (for value estimation)
-    q_loss = q_trainer.compute_q_value_loss(batch['lang'])
-
+    #q_loss = q_trainer.compute_q_value_loss(batch['lang'])
+    q_loss=q_trainer.compute_q_value_loss(batch)
     q_trainer.q_optimizer.zero_grad()
 
     q_loss.backward()
@@ -1099,7 +1170,7 @@ def _q_chunking_offline_step(q_trainer, batch: Dict[str, Any]) -> Dict[str, floa
 
     # Combined RL loss (matching ACFQL formula 13: bc_flow + alpha*distill + q_maximize)
     total_rl_loss = (
-        q_trainer.q_cfg.bc_distill_loss_weight * distill_loss +
+        q_trainer.q_cfg.distill_loss_weight * distill_loss +
         rl_actor_loss  # Q maximization (negative Q for minimization)
     )
 
@@ -1107,7 +1178,7 @@ def _q_chunking_offline_step(q_trainer, batch: Dict[str, Any]) -> Dict[str, floa
     q_trainer.rl_optimizer.step()
 
     metrics['distill_loss'] = distill_loss.item()
-    metrics['q_maximize_loss'] = rl_actor_loss.item()
+    metrics['rl_actor_loss'] = rl_actor_loss.item()
     metrics['q_value'] = q_value.item()
 
     # 4. Update target networks
@@ -1120,9 +1191,12 @@ def _q_chunking_offline_step(q_trainer, batch: Dict[str, Any]) -> Dict[str, floa
     return metrics
 
 
+
 def _q_chunking_online_step(q_trainer, batch: Dict[str, Any]) -> Dict[str, float]:
     """Execute one online training step: BC + RL learning from mixed data."""
     metrics = {}
+    batch=batch['lang'] if isinstance(batch,dict) and 'lang' in batch else batch
+
     mixed_batch = q_trainer.replay_buffer.sample_mixed_batch(
         demo_batch=batch,
         sequence_length=q_trainer.q_cfg.chunk_size,
@@ -1149,7 +1223,8 @@ def _q_chunking_online_step(q_trainer, batch: Dict[str, Any]) -> Dict[str, float
     # Combined RL loss (matching ACFQL formula 13)
     total_rl_loss = (
 
-        q_trainer.q_cfg.bc_distill_loss_weight * distill_loss +
+
+        q_trainer.q_cfg.distill_loss_weight * distill_loss +
         rl_actor_loss  # Q maximization
     )
 
@@ -1163,7 +1238,7 @@ def _q_chunking_online_step(q_trainer, batch: Dict[str, Any]) -> Dict[str, float
 
 
     metrics['distill_loss'] = distill_loss.item()
-    metrics['q_maximize_loss'] = rl_actor_loss.item()
+    metrics['rl_actor_loss'] = rl_actor_loss.item()
     metrics['q_value'] = q_value.item()
 
     # 4. Update target networks
@@ -1172,7 +1247,6 @@ def _q_chunking_online_step(q_trainer, batch: Dict[str, Any]) -> Dict[str, float
 
     q_trainer.online_steps += 1
     q_trainer.step_count += 1
-
 
     return metrics
 
@@ -1184,26 +1258,32 @@ def train_q_chunking(cfg: DictConfig, datamodule):
     env = None
 
     # Initialize environment for online training if needed
-    if cfg.training_choice in ["online", "offline2online"]:
+    if cfg.training_choice in ["offline","online", "offline2online"]:
+        logger.info("start")
         try:
-            log_rank_0("Environment initialization needed for online training")
             log_rank_0("Note: Environment setup would depend on LIBERO configuration")
         except Exception as e:
             log_rank_0(f"Warning: Could not initialize environment: {e}")
 
-    # Route to appropriate training stage using existing correct functions
+
     if cfg.training_choice == "offline":
         log_rank_0("🔥 Starting Q-chunking OFFLINE stage")
         _train_q_chunking_offline_stage(cfg, datamodule)
+
+
     elif cfg.training_choice == "online":
         log_rank_0("🌐 Starting Q-chunking ONLINE stage")
         _train_q_chunking_online_stage(cfg, datamodule, env)
+
+
     elif cfg.training_choice == "offline2online":
         log_rank_0("🔄 Starting Q-chunking OFFLINE-TO-ONLINE sequential training")
         log_rank_0("Phase 1: Offline RL stage")
         _train_q_chunking_offline_stage(cfg, datamodule)
         log_rank_0("Phase 2: Online RL stage")
         _train_q_chunking_online_stage(cfg, datamodule, env)
+
+
     else:
         raise ValueError(f"Unknown training choice: {cfg.training_choice}")
 
@@ -1218,6 +1298,7 @@ def _move_batch_to_device(batch, device):
         elif torch.is_tensor(value):
             batch[key] = value.to(device)
     return batch
+
 
 @hydra.main(config_path="../conf", config_name="config_libero")
 def train(cfg: DictConfig) -> None:
@@ -1268,8 +1349,8 @@ def train(cfg: DictConfig) -> None:
                 save_code=True,
                 dir=str(log_dir)
             )
-            log_rank_0(f"✅ Initialized Q-chunking wandb logging: {wandb.run.name}")
-            log_rank_0(f"💾 Logs will be saved to: {log_dir}")
+
+            log_rank_0(f" Logs will be saved to: {log_dir}")
 
 
             # Initialize environment for online training if needed
@@ -1305,6 +1386,7 @@ def train(cfg: DictConfig) -> None:
             model = hydra.utils.instantiate(cfg.model) if get_last_checkpoint(Path.cwd()) is None else \
                    getattr(models_m, cfg.model["_target_"].split(".")[-1]).load_from_checkpoint(get_last_checkpoint(Path.cwd()).as_posix())
 
+
             if "pretrain_chk" in cfg:
                 initialize_pretrained_weights(model, cfg)
 
@@ -1330,6 +1412,7 @@ def train(cfg: DictConfig) -> None:
                 "use_distributed_sampler": True,
                 "default_root_dir": work_dir,
                 "sync_batchnorm": True,
+                'precision':32,
             }
 
             # Log configuration
@@ -1388,6 +1471,7 @@ def cleanup_distributed():
     """Cleanup distributed training resources"""
     if torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
+
 
 
 

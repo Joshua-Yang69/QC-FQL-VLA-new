@@ -5,15 +5,14 @@ defaults:
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
 
-
-root_data_dir: /home/yagmurlu/code/MoDE_Calvin/dataset/task_ABC_D
+root_data_dir: /home/ztj/yzh/flower_vla_calvin/libero_spatial
 lang_folder: lang_clip_resnet50
 
 log_dir: ./logs
 slurm: false
 seed: 42
 device: 'cuda'
-batch_size: 8
+batch_size: 16
 devices: 4
 goal_window_size: 1
 act_dim: 7
@@ -24,18 +23,23 @@ obs_seq_len: 1
 act_seq_len: 10
 multistep: ${act_seq_len}
 p_last_state: 0
-max_epochs: 40
+max_epochs: 50
 rollout_lh_skip_epochs: 9
-num_workers: 1
+num_workers: 4
 benchmark_name: ${libero_benchmark} # calvin_abcd
 libero_benchmark: libero_spatial # libero_goal # libero_spatial, libero_object, LIBERO_GOAL, LIBERO_90, LIBERO_10
 
 # Training Mode Selection: BC/offline/online/offline2online
 training_choice: "offline"  # BC, offline, online, offline2online
+checkpoint_type: "full"     # full, rl_only, bc_only
 
+
+
+
+# q_cfg
 # Q-Chunking RL Configuration (used when training_choice != BC)
 q_chunking:
-  enabled: true  # Set to false for BC mode, true for RL modes
+  enabled: true # Set to false for BC mode, true for RL modes
   training_stage: ${training_choice}  # Maps directly to training choice
 
   # Model configuration - TWO separate VLA models
@@ -45,8 +49,9 @@ q_chunking:
       _recursive_: false
       # VLM Configuration
       vlm_path: microsoft/Florence-2-large
-      freeze_florence: false
-      freeze_vision_tower: false
+     # pretrained_model_path: /home/ztj/yzh/flower_vla_calvin/flower_libero_spatial/model.safetensors
+      freeze_florence: true
+      freeze_vision_tower: true
       vlm_prompt_style: default
       token_dropout: 0.1
 
@@ -106,8 +111,9 @@ q_chunking:
       _recursive_: false
       # VLM Configuration
       vlm_path: microsoft/Florence-2-large
-      freeze_florence: false
-      freeze_vision_tower: false
+      pretrained_model_path: /home/ztj/yzh/flower_vla_calvin/flower_libero_spatial/model.safetensors
+      freeze_florence: true
+      freeze_vision_tower: true
       vlm_prompt_style: default
       token_dropout: 0.1
 
@@ -169,7 +175,7 @@ q_chunking:
   buffer_size: ${.replay_buffer_size}  # Required alias by implementation
   batch_size: 32  # Replay buffer batch size
   q_lr: 1e-4  # Q-network learning rate
-  bc_distill_loss_weight: 1.0
+  distill_loss_weight: 1.0
   q_value_loss_weight: 1.0
   target_update_freq: 1000  # Hard target updates frequency
   q_aggregation: "min"  # Target Q-value aggregation method
@@ -177,19 +183,18 @@ q_chunking:
 
   # Training stage specific parameters
   offline:
-    # Offline RL: Train BC_VLA + RL_VLA + Q_networks from demonstrations
-    sync_rl_freq: 1000  # Sync RL VLA weights with BC VLA every N steps
+  max_epochs: 50
 
   online:
     # Online RL: Add environment interaction and replay buffer
     mixed_training: true  # Train on both dataset and replay buffer
-    env_steps_per_epoch: 1000  # Environment interaction steps per epoch
+    env_steps_per_epoch: 500  # Environment interaction steps per epoch
     start_online_after_epochs: 0  # Start immediately in online mode
 
   offline2online:
     # Sequential: First offline stage, then online stage
-    offline_epochs: 20  # Epochs for offline stage
-    online_epochs: 20   # Epochs for online stage
+    offline_epochs: 30  # Epochs for offline stage
+    online_epochs: 30   # Epochs for online stage
 
   # Q-network configuration (for value estimation of VLA actions)
   q_network:
@@ -204,9 +209,9 @@ q_chunking:
     output_activation: null
 
   # Training configuration
-  target_update_freq: 1  # Target network update frequency
+#   target_update_freq: 1  # Target network update frequency
   gradient_clip_norm: 1.0
-  warmup_steps: 1000
+  warmup_steps: 0
 
   # Loss function weights
   bc_loss_weight: 1.0
@@ -222,7 +227,7 @@ q_chunking:
 
   # Evaluation configuration
   evaluation:
-    eval_freq: 5  # Evaluate every N epochs
+    eval_freq: 10  # Evaluate every N epochs
     eval_episodes: 10
     eval_deterministic: true
     save_videos: true
@@ -236,7 +241,7 @@ q_chunking:
 
   # Checkpoint configuration
   checkpoint:
-    save_freq: 5  # Save every N epochs
+    save_freq: 10  # Save every N epochs
     keep_separate: true  # Keep BC, RL, and full checkpoints separate
     auto_resume: true  # Automatically resume from latest checkpoint
 
@@ -257,6 +262,7 @@ trainer:
   strategy: "ddp"
   limit_train_batches: 1000
   limit_val_batches: 4
+
 
 logger:
   _target_: pytorch_lightning.loggers.WandbLogger

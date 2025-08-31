@@ -1,18 +1,30 @@
-# 忽略数据集和大文件
-*.zip
-*.tar.gz
-*.pth
+# Python
+__pycache__/
+*.pyc
+
+# 大文件/依赖包/临时产物
+*.whl
 *.pt
-*.h5
+*.pth
+*.bin
+*.idx
 *.npz
 *.npy
+*.zip
+*.tar
+*.tar.gz
 
-# 忽略日志和缓存
-logs/
+# 训练产物
+weights*/
+checkpoints*/
+logs*/
 wandb/
-__pycache__/
-*.log
+runs/
+tensorboard*/
+outputs*/
 
-# 忽略环境文件夹
-calvin_env/
-qc_env/
+# 本地数据
+data*/
+datasets*/
+.cache/
+.DS_Store

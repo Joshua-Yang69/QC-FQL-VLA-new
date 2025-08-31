@@ -119,6 +119,7 @@ class EvaluateLibero:
 
         self.all_tasks = list(range(self.benchmark_instance.n_tasks))
 
+
     def setup(self) -> None:
         if self.benchmark is None:
             self.eval_sequences = get_sequences(self.num_sequences)
@@ -126,20 +127,20 @@ class EvaluateLibero:
 
     def start(self) -> None:
         successes = self.evaluate_policy(self.model, store_video=self.num_videos)
-        
+
         result_array = sum(successes) / len(successes)
-        
+
         # Fix: Use colon instead of comma for dictionary
         wandb.log({"eval_lh/avg_seq_len": torch.tensor(result_array)})
-        
+
         for success, task_name in zip(successes, self.task_names):
             wandb.log({f"eval_lh/sr_{task_name}": success})
-            
+
         logger.info(f"eval_lh/avg_seq_len success rate {torch.tensor(result_array)}")
-        
+
         for success, task_name in zip(successes, self.task_names):
             logger.info(f"eval_lh/sr_{task_name} with success {success}")
-        
+
         print('done')
         print()
 
@@ -190,7 +191,7 @@ class EvaluateLibero:
             print(f"Could not get LIBERO initial states: {e}")
             print("Will use random resets instead")
             initial_states = None
-        
+
         num_success = 0
         for i in tqdm(range(self.n_eval), desc="Evaluating"):
             store_video_this_rollout = i < store_video
@@ -207,7 +208,7 @@ class EvaluateLibero:
             done = False
             steps = 0
             model.reset()
-            
+
             # Simple state setting using LIBERO's native format
             if initial_states is not None and i < len(initial_states):
                 try:
@@ -283,7 +284,7 @@ class EvaluateLibero:
         """Convert LIBERO environment observations to the format expected by the model"""
         translated_dict = {}
         translated_dict['rgb_obs'] = {}
-        
+
         # Map environment camera observations to expected keys
         # The environment uses 'agentview_image' but model expects 'rgb_static'
         if 'agentview_image' in obs_space:
@@ -291,23 +292,26 @@ class EvaluateLibero:
         # The environment uses 'robot0_eye_in_hand_image' but model expects 'rgb_gripper'
         if 'robot0_eye_in_hand_image' in obs_space:
             translated_dict['rgb_obs']['rgb_gripper'] = obs_space['robot0_eye_in_hand_image']
-        
+
         # Map robot state observations
         if 'robot0_joint_pos' in obs_space:
             translated_dict['robot_obs'] = obs_space['robot0_joint_pos']
         if 'robot0_gripper_qpos' in obs_space:
             translated_dict['gripper_states'] = obs_space['robot0_gripper_qpos']
-        
+
         # Empty dict for depth since not used
+        #change this model to a 3D-vision vla 
+
+
         translated_dict['depth_obs'] = {}
-        
+
         return translated_dict
 
     def apply_transforms(self, data, train=False):
         """Apply validation transforms to the observations"""
         # Determine which transform set to use (use 'val' for evaluation)
         transform_set = 'train' if train else 'val'
-        
+
         # Print available transform keys for debugging
         if not hasattr(self, '_printed_transforms'):
             print(f"Transform structure: {type(self.transforms)}")
@@ -316,24 +320,24 @@ class EvaluateLibero:
                 if transform_set in self.transforms:
                     print(f"{transform_set} transform keys: {list(self.transforms[transform_set].keys())}")
             self._printed_transforms = True
-        
+
         # Ensure we're accessing the right transform subset
         if transform_set in self.transforms:
             transforms_to_use = self.transforms[transform_set]
         else:
             print(f"Warning: '{transform_set}' not found in transforms. Available keys: {list(self.transforms.keys())}")
             transforms_to_use = self.transforms  # Fall back to top level
-        
+
         # Process each observation
         for key in data['rgb_obs']:
             x = data['rgb_obs'][key]
             if len(x.shape) == 3:
                 x = np.expand_dims(x, axis=0)
             x = torch.from_numpy(x).byte().permute(0, 3, 1, 2)
-            
+
             # Try to find the right transform key
             transform_found = False
-            
+
             # Check direct key match
             if key in transforms_to_use:
                 for transform in transforms_to_use[key]:
@@ -345,7 +349,7 @@ class EvaluateLibero:
                     'rgb_static': ['rgb', 'agentview', 'static', 'agentview_rgb'],
                     'rgb_gripper': ['gripper', 'eye_in_hand', 'hand', 'eye_in_hand_rgb']
                 }
-                
+
                 if key in alternative_keys:
                     for alt_key in alternative_keys[key]:
                         if alt_key in transforms_to_use:
@@ -353,20 +357,20 @@ class EvaluateLibero:
                                 x = transform(x)
                             transform_found = True
                             break
-            
+
             if not transform_found:
                 print(f"Warning: No transform found for {key}. Using default normalization.")
                 x = x.float() / 255.0  # Default normalization
-            
+
             data['rgb_obs'][key] = x.unsqueeze(0).to(self.device)
-        
+
         # Ensure robot_obs and gripper_states are properly formatted tensors
         if 'robot_obs' in data and not isinstance(data['robot_obs'], torch.Tensor):
             data['robot_obs'] = torch.tensor(data['robot_obs'], dtype=torch.float32).unsqueeze(0).to(self.device)
-        
+
         if 'gripper_states' in data and not isinstance(data['gripper_states'], torch.Tensor):
             data['gripper_states'] = torch.tensor(data['gripper_states'], dtype=torch.float32).unsqueeze(0).to(self.device)
-        
+
         return data
 
     def process_env_obs(self, env_obs, lang_embed, lang_text=None):

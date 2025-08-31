@@ -54,7 +54,7 @@ class TranslatedSequenceVLDataset(Dataset):
 
         # Apply transforms
         if self.transforms:
-            main_dict = self.apply_transforms(main_dict["lang"])
+            main_dict["lang"] = self.apply_transforms(main_dict["lang"])
         main_dict['idx'] = idx
         return main_dict
 
@@ -105,9 +105,11 @@ class TranslatedSequenceVLDataset(Dataset):
             for key in return_dict['obs']:
                 # 从原始序列中取第chunk_size帧
                 return_dict['next_obs'][key] = return_dict['obs'][key][chunk_size:chunk_size+1]
+
+            # 构造next_robot_obs和next_gripper_states (保持与robot_obs相同的序列结构)
+            # For Q-chunking: next state sequence should start from chunk_size and have same seq_len as obs_seq_len
             next_start_idx = chunk_size
             next_end_idx = next_start_idx + self.obs_seq_len
-            # 构造next_robot_obs和next_gripper_states
             return_dict['next_robot_obs'] = return_dict['obs']['joint_states'][next_start_idx:next_end_idx]
             return_dict['next_gripper_states'] = return_dict['obs']['gripper_states'][next_start_idx:next_end_idx]
         else:
@@ -116,8 +118,9 @@ class TranslatedSequenceVLDataset(Dataset):
             for key in return_dict['obs']:
                 return_dict['next_obs'][key] = return_dict['obs'][key][-1:]
 
-            return_dict['next_robot_obs'] = return_dict['obs']['joint_states'][-1]
-            return_dict['next_gripper_states'] = return_dict['obs']['gripper_states'][-1]
+            # Fallback: use last obs_seq_len frames as next state sequence
+            return_dict['next_robot_obs'] = return_dict['obs']['joint_states'][-self.obs_seq_len:]
+            return_dict['next_gripper_states'] = return_dict['obs']['gripper_states'][-self.obs_seq_len:]
 
 
         seq_len = len(return_dict['actions'])
@@ -142,7 +145,6 @@ class TranslatedSequenceVLDataset(Dataset):
                 dict['gripper_states']
             ], axis=-1)
 
-
         # 处理next_obs
         if 'next_obs' in dict.keys():
             translated_dict['next_rgb_obs'] = {}
@@ -150,6 +152,7 @@ class TranslatedSequenceVLDataset(Dataset):
             translated_dict["next_rgb_obs"]['rgb_gripper'] = dict['next_obs']['eye_in_hand_rgb']
 
             if 'next_robot_obs' in dict and 'next_gripper_states' in dict:
+                # Concatenate next_robot_obs and next_gripper_states with consistent sequence structure
                 translated_dict['next_robot_obs'] = np.concatenate([
                     dict['next_robot_obs'],
                     dict['next_gripper_states']
@@ -159,17 +162,13 @@ class TranslatedSequenceVLDataset(Dataset):
             translated_dict['next_rgb_obs'] = {}
             translated_dict["next_rgb_obs"]['rgb_static'] = dict['obs']['agentview_rgb'][-1:]  # 最后一帧
             translated_dict["next_rgb_obs"]['rgb_gripper'] = dict['obs']['eye_in_hand_rgb'][-1:]  # 最后一帧
-            '''
-            last_robot_obs = dict['robot_obs'][-1]  # 最后一帧
-            last_gripper_state = dict['gripper_states'][-1]  # 最后一帧
-            if np.isscalar(last_gripper_state):
-                last_gripper_state = np.array([last_gripper_state])
-            translated_dict['next_robot_obs'] = np.concatenate([last_robot_obs, last_gripper_state], axis=-1)
-            '''
+
+            # Use the same sequence structure as robot_obs for consistency
+            # next_robot_obs and next_gripper_states should have the same seq_len as robot_obs
             translated_dict['next_robot_obs'] = np.concatenate([
-                dict['next_robot_obs'],
-                dict['next_gripper_states'],
-            ],axis=-1)
+                dict['next_robot_obs'],  # Already has correct sequence shape from get_des_act_obs_sequence
+                dict['next_gripper_states']
+            ], axis=-1)
 
         # 其他字段
         translated_dict['lang_text'] = dict['lang_text']
@@ -241,7 +240,7 @@ class LiberoDataModule(pl.LightningDataModule):
         benchmark_name = self.benchmark_name
         benchmark_instance = get_benchmark(benchmark_name)()
         num_tasks = benchmark_instance.get_num_tasks()
-        datasets_default_path = datasets_cfg.get('custom_data_path', get_libero_path("datasets"))
+        datasets_default_path = datasets_cfg.lang_dataset.get('custom_data_path', get_libero_path("datasets"))
 
         train_datasets = []
         val_datasets = []

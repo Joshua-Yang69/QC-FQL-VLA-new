@@ -19,7 +19,7 @@ rollout_lh:
   benchmark_name: ${libero_benchmark}
   rollout_freq: 10
   num_videos: 0
-  num_sequences: 50 
+  num_sequences: 50
   max_steps: 520
   empty_cache: false
   debug: false

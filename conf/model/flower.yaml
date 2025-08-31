@@ -16,9 +16,10 @@ lowdim_obs_dim: 7
 action_dim: 7
 act_window_size: 10
 
+
 # pretraining stuff
 load_pretrained: True
-pretrained_model_path: /home/hk-project-sustainebot/ft4740/code/flower_vla_policy/logs/runs/2025-02-05/10-17-02/360000_model_weights.pt
+pretrained_model_path: /home/ztj/yzh/flower_vla_calvin/flower_libero_spatial/model.safetensors
 # /home/hk-project-sustainebot/ft4740/code/flower_vla/logs/runs/2025-02-19/11-15-41/200000_model_weights.pt
 # /home/hk-project-sustainebot/ft4740/code/flower_vla_policy/logs/runs/2025-02-05/10-17-02/360000_model_weights.pt joint + delta pret
 # Model flags

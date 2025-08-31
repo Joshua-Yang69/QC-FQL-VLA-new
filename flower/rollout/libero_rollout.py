@@ -446,7 +446,7 @@ if __name__ == "__main__":
 
     print("Rollout Libero")
     rollout = RolloutLibero(
-        "libero_10",
+        "libero_spatial",
         {},
         10,
         10,
