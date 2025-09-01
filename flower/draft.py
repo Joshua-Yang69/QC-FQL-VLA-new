@@ -60,3 +60,46 @@ if step != 0 and step % self.save_every_n_steps == 0:
             log.error(f"Error in store_model_weights: {e}")
             import traceback
             traceback.print_exc()
+def forward(self, x, custom_attn_mask=None, is_causal=False):
+        # ... (Your existing code for q, k, v, etc.)
+
+        B, T, C = x.shape
+        qkv = self.qkv(x).reshape(B, T, 3, self.n_heads, C // self.n_heads).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+        if self.use_rope:
+            q, k = apply_rotary_pos_emb(q, k, self.cos, self.sin)
+
+        # --- 修复部分 ---
+        # Initialize attn_mask and is_causal to be used in the F.scaled_dot_product_attention call
+        attn_mask = None
+        use_is_causal = False
+
+        if is_causal and custom_attn_mask is None:
+            # Use PyTorch's built-in causal masking by setting is_causal=True and attn_mask=None
+            use_is_causal = True
+        elif custom_attn_mask is not None:
+            # For custom masks, set is_causal=False and pass the mask explicitly
+            attn_mask = custom_attn_mask.unsqueeze(1).expand(-1, self.n_heads, -1, -1)
+            # The mask needs to be a boolean mask, where True means to mask/ignore the value
+            # Note: your original code used ~mask which is correct if mask is True for things to keep.
+            # Here we assume the input custom_attn_mask is a boolean mask where True means to mask.
+            # If your custom mask is `True` for positions that should be **masked**, then `~` is not needed.
+            # If your custom mask is `True` for positions that should be **kept**, then `~` is needed.
+            # Double-check this part based on your `custom_attn_mask` definition.
+            # For simplicity and to match the PyTorch convention, let's assume the mask is where `True` means mask.
+
+        # Use PyTorch's built-in scaled dot-product attention.
+        attn_output = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=self.attn_dropout.p if self.training else 0.0,
+            scale=self.scale,
+            is_causal=use_is_causal
+        )
+        # --- 修复部分结束 ---
+
+        out = attn_output.transpose(1, 2).reshape(B, T, C)
+        out = self.resid_dropout(self.proj(out))
+        return out

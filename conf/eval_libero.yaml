@@ -1,19 +1,30 @@
+defaults:
+  - callbacks: libero
+  - datamodule: libero
+  - model: flower
+  - transforms: libero_transforms
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
 eval_cfg_overwrite:
   datamodule:
     datasets:
       lang_dataset:
         lang_folder: lang_annotations
   model:
-    num_sampling_steps: 1       #change from 4 to 1,compatible with rl_vla with one step flow
+    num_sampling_steps: 4       #change from 4 to 1,compatible with rl_vla with one step flow
+
 
 
 task_embedding_format: clip
 log_dir: ./evaluation_log/
 dataset_path: /home/ztj/yzh/flower_vla_calvin/logs/runs/2025-08-29/14-06-59/flower_vla_calvin/LIBERO/datasets/datasets/libero_spatial
-train_folder: /home/hk-project-sustainebot/ft4740/code/flower_vla_calvin/logs/best_checkpoints/calvin_abcd/.hydra/config.yaml
-checkpoint: /home/hk-project-sustainebot/ft4740/code/flower_vla_calvin/logs/best_checkpoints/calvin_abcd/seed_342/avg_seq_len=4.72.ckpt
+#train_folder: /home/ztj/yzh/flower_vla_calvin/logs/runs/2025-08-31/17-50-08/seed_42_offline/hf_models_checkpoint_initial/bc_vla/config.yaml
+train_folder: /home/ztj/yzh/flower_vla_calvin/logs/runs/2025-09-01/13-22-18/.hydra/config.yaml
+# path of config
+checkpoint: /home/ztj/yzh/flower_vla_calvin/logs/runs/2025-08-31/17-50-08/seed_42_offline/hf_models_checkpoint_initial/bc_vla/model.safetensors
 device: 0
-num_videos: 30
+num_videos: 5
 debug: False
 
 log_wandb: True
@@ -22,7 +33,7 @@ wandb_entity: bennoq
 num_sequences: 50
 max_steps: 520
 n_eval: 20
-num_sampling_steps: 1 #compatable with rl_vla with one step flow
+num_sampling_steps: 4#compatable with rl_vla with one step flow
 multistep: 10
 
 benchmark_name: libero_spatial # [LIBERO_SPATIAL, LIBERO_OBJECT, LIBERO_GOAL, LIBERO_90, LIBERO_10]

@@ -12,8 +12,9 @@ log_dir: ./logs
 slurm: false
 seed: 42
 device: 'cuda'
-batch_size: 16
+batch_size: 4
 devices: 4
+#world_size: 4
 goal_window_size: 1
 act_dim: 7
 proprio_dims: 9
@@ -223,7 +224,7 @@ q_chunking:
 
   # Evaluation configuration
   evaluation:
-    eval_freq: 1  # Evaluate every N epochs
+    eval_freq: 6  # Evaluate every N epochs
     eval_episodes: 10
     eval_deterministic: true
     save_videos: true

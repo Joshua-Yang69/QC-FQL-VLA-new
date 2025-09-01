@@ -4,7 +4,7 @@ _target_: flower.datasets.libero_data_module.LiberoDataModule
 _recursive_: false
 
 
-
+# transforms: ${transforms}
 root_data_dir: ${root_data_dir}
 action_space: 7
 shuffle_val: false

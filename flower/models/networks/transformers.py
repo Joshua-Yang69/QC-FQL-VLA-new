@@ -39,7 +39,7 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
 class SwiGlu(nn.Module):
     """
     An implementation of the SwiGlu MLP activation as used in transformer feedforward layers.
-    
+
     Args:
         dim: Input dimension.
         hidden_dim: Dimension of the hidden layer. If None, defaults to 4 * dim.
@@ -99,13 +99,13 @@ def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor,
                          position_ids: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Applies rotary positional embeddings to queries and keys.
-    
+
     Args:
         q: Query tensor of shape [B, heads, seq_len, head_dim].
         k: Key tensor with the same shape as q.
         cos, sin: Cosine and sine frequency tensors of shape [max_seq_len, head_dim/2].
         position_ids: Optional tensor with position indices; if None, uses sequential positions.
-    
+
     Returns:
         A tuple (q_rot, k_rot) with rotary embeddings applied.
     """
@@ -127,7 +127,7 @@ def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor,
 class FlowerAttention(nn.Module):
     """
     Multi-head self-attention module with optional rotary positional embeddings.
-    
+
     Args:
         dim: Input dimension.
         n_heads: Number of attention heads.
@@ -170,15 +170,16 @@ class FlowerAttention(nn.Module):
                 is_causal: bool = False) -> torch.Tensor:
         """
         Forward pass for self-attention.
-        
+
         Args:
             x: Input tensor of shape [B, seq_len, dim].
             custom_attn_mask: Optional attention mask.
             is_causal: If True, applies causal masking.
-        
+
         Returns:
             Tensor of shape [B, seq_len, dim] after attention and projection.
         """
+
         B, T, C = x.size()
         # Compute query, key, value and reshape for multi-head attention.
         qkv = self.qkv(x).reshape(B, T, 3, self.n_heads, self.head_dim).permute(2, 0, 3, 1, 4)
@@ -188,17 +189,25 @@ class FlowerAttention(nn.Module):
         if self.use_rope:
             q, k = apply_rotary_pos_emb(q, k, self.cos, self.sin)
         # Build causal mask if needed.
+
+
+        attn_mask = None
+        use_is_casual = False
+
         if is_causal and custom_attn_mask is None:
             mask = torch.triu(torch.ones(T, T, dtype=torch.bool, device=x.device), diagonal=1)
             mask = mask.unsqueeze(0).unsqueeze(0)
-        elif custom_attn_mask is not None:
+        elif is_causal and custom_attn_mask is not None:
+            mask=None
+            custom_attn_mask = None
+        elif custom_attn_mask is not None and is_causal is None:
             mask = custom_attn_mask.unsqueeze(1).expand(-1, self.n_heads, -1, -1)
         else:
             mask = None
         # Use PyTorch's built-in scaled dot-product attention.
         attn_output = F.scaled_dot_product_attention(
             q, k, v,
-            attn_mask=None if mask is None else ~mask,
+            attn_mask=None if mask is None or is_causal else ~mask,
             dropout_p=self.attn_dropout.p if self.training else 0.0,
             scale=self.scale,
             is_causal=is_causal if custom_attn_mask is None else False
@@ -206,12 +215,13 @@ class FlowerAttention(nn.Module):
         out = attn_output.transpose(1, 2).reshape(B, T, C)
         out = self.resid_dropout(self.proj(out))
         return out
-    
+
+
 
 class FlowerCrossAttention(nn.Module):
     """
     Cross-attention module with optional rotary embeddings.
-    
+
     Args:
         dim: Input and output dimension.
         n_heads: Number of attention heads.
@@ -264,12 +274,12 @@ class FlowerCrossAttention(nn.Module):
                 custom_attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Applies cross-attention between x (queries) and context (keys and values).
-        
+
         Args:
             x: Query tensor of shape [B, seq_len, dim].
             context: Context tensor of shape [B, context_len, dim].
             custom_attn_mask: Optional attention mask.
-        
+
         Returns:
             Tensor of shape [B, seq_len, dim].
         """
@@ -313,7 +323,7 @@ class FlowBlock(nn.Module):
     """
     A transformer block for flow-based diffusion. Combines self-attention,
     (optional) cross-attention, and a SwiGlu MLP with adaptive layer normalization modulation.
-    
+
     Args:
         dim: Input dimension.
         heads: Number of attention heads.
@@ -370,7 +380,7 @@ class FlowBlock(nn.Module):
                 global_adaln: Optional[List[torch.Tensor]] = None) -> torch.Tensor:
         """
         Forward pass through the FlowBlock.
-        
+
         Args:
             cx: Input tensor for the block (e.g. action latent representations) of shape [B, L, D].
             c: Conditioning tensor (from external encoder).
@@ -378,7 +388,7 @@ class FlowBlock(nn.Module):
             custom_attn_mask: Optional attention mask.
             is_causal: If True, uses causal self-attention.
             global_adaln: Optional list of global AdaLN modulation signals.
-        
+
         Returns:
             Output tensor of shape [B, L, D].
         """
@@ -397,7 +407,7 @@ class FlowBlock(nn.Module):
         # Self-attention block with modulation.
         x_norm = self.norm1(cx)
         x_mod = modulate(x_norm, shift_msa, scale_msa)
-        x_self = self.self_attn(x_mod, custom_attn_mask=custom_attn_mask, is_causal=is_causal)
+        x_self = self.self_attn(x_mod, custom_attn_mask=custom_attn_mask, is_causal=is_causal and custom_attn_mask is None)
         x_out = residual + gate_msa.unsqueeze(1) * x_self
 
         # Optionally apply cross-attention.
@@ -454,7 +464,7 @@ class TimestepEmbedder(nn.Module):
         )
         t_emb = self.mlp(t_freq)
         return t_emb
-    
+
 
 
 
@@ -482,7 +492,7 @@ class SharedAdaLNController(nn.Module):
         else:
             # Split into 6 parts for self-attention only path
             return mod_signals.chunk(6, dim=-1)
-        
+
 
 
 
@@ -550,27 +560,27 @@ class ActionSpaceEmbedderParameter(nn.Module):
             nn.Linear(hidden_size, hidden_size, bias=True),
         )
         self.max_actions = max_actions
-        
+
     def forward(self, action_indices):
         """
         Convert action indices to embeddings using parameter lookup.
-        
+
         Args:
             action_indices: tensor of shape (batch_size,) containing integers in [0, max_actions-1]
         """
         # Index into the parameter matrix
         embeddings = self.action_embeddings[action_indices]
-        
+
         # Process through MLP
         embeddings = embeddings
         output = self.mlp(embeddings)
-        
+
         return output
 
     def get_all_embeddings(self):
         """Returns embeddings for all possible actions."""
         return self.mlp(self.action_embeddings)
-    
+
 
 
 
@@ -582,5 +592,5 @@ class ZeroEncoder(nn.Module):
 
     def forward(self, x):
         return torch.zeros((x.shape[0], self.dit_dim), device=self.device)
-    
+
 

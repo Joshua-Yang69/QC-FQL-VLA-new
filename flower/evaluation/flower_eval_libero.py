@@ -300,7 +300,7 @@ class EvaluateLibero:
             translated_dict['gripper_states'] = obs_space['robot0_gripper_qpos']
 
         # Empty dict for depth since not used
-        #change this model to a 3D-vision vla 
+        #change this model to a 3D-vision vla
 
 
         translated_dict['depth_obs'] = {}
@@ -401,7 +401,13 @@ def main(cfg):
     model.eval()
 
     log_dir = get_log_dir(cfg.log_dir)
-    transforms = hydra.utils.instantiate(dm.transforms)
+    #transforms = hydra.utils.instantiate(dm.transforms)
+    if hasattr(dm, 'transforms'):
+        transforms = hydra.utils.instantiate(dm.transforms)
+    else:
+        # Load transforms manually from config
+        transforms_cfg = OmegaConf.load(Path(__file__).parents[2] / "conf/datamodule/transforms/libero_transforms.yaml")
+        transforms = hydra.utils.instantiate(transforms_cfg['val'])
 
     eval_libero = EvaluateLibero(
         model=model,

@@ -624,6 +624,7 @@ class FLOWERVLA(pl.LightningModule):
                 global_adaln=global_adaln
             )
 
+
         # Decode and return
         return self.decode_actions(cx, action_type, valid_dims)
 
